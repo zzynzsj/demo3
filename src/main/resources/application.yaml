@@ -1,0 +1,29 @@
+springdoc:
+  api-docs:
+    groups:
+      enabled: true
+  # 分组配置
+  group-configs:
+    - group: 测试(test)
+      paths-to-match: [ /api/v1/test/** ]
+  swagger-ui:
+    disable-swagger-default-url: true
+
+logging:
+  level:
+    com.example.demo: debug
+
+#mybatis-plus
+mybatis-plus:
+  type-aliases-package: com.example.demo.domain
+  mapper-locations: classpath*:mapper/**/*Mapper.xml
+  configuration:
+    call-setters-on-nulls: true
+    jdbc-type-for-null: 'null'
+  global-config:
+    db-config:
+      # 全局统一下雪花算法主键
+      id-type: assign_id
+spring:
+  profiles:
+    active: dev

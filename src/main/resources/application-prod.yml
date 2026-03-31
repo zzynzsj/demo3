@@ -1,0 +1,52 @@
+spring:
+  datasource:
+    druid:
+      driver-class-name: com.mysql.cj.jdbc.Driver
+      # 生产环境部署在同服务器的 Docker 内，直接用内网或容器名，端口用 3306，密码通过 Portainer 环境变量注入
+      url: jdbc:mysql://${DB_HOST:172.17.0.1}:${DB_PORT:3306}/${DB_NAME:demo3}?useSSL=false&serverTimezone=GMT%2B8&useUnicode=true&characterEncoding=utf-8&allowPublicKeyRetrieval=true&allowMultiQueries=true&rewriteBatchedStatements=true
+      username: ${DB_USER:root}
+      password: ${DB_PWD}
+      # 百万级核销高并发连接池调优
+      initial-size: 10
+      min-idle: 10
+      max-active: 100
+      max-wait: 10000
+      test-on-borrow: true
+      validation-query: SELECT 1
+  # 2. Redis 配置 (直连同堆栈下的 demo3-redis 容器)
+  redis:
+    host: ${SPRING_REDIS_HOST:demo3-redis}
+    port: 6379
+    timeout: 10000ms
+    lettuce:
+      pool:
+        max-active: 8
+        max-wait: -1ms
+        max-idle: 8
+        min-idle: 0
+  # 3. RabbitMQ 配置 (直连同堆栈下的 demo3-mq 容器)
+  rabbitmq:
+    host: ${SPRING_RABBITMQ_HOST:demo3-mq}
+    port: 5672
+    username: ${RABBITMQ_USER:admin}
+    password: ${RABBITMQ_PWD}
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    listener:
+      simple:
+        # 消费者手动确认模式，业务处理报错时不丢消息，可打回队列重试
+        acknowledge-mode: manual
+logging:
+  level:
+    com.com.example.demo: debug
+
+management:
+  endpoint:
+    health:
+      show-details: always
+    restart:
+      enabled: false
+  endpoints:
+    web:
+      exposure:
+        include: 'health,info' # 生产环境仅暴露健康检查
