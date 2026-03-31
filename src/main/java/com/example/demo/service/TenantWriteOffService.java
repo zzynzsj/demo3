@@ -34,13 +34,13 @@ public class TenantWriteOffService {
     /**
      * 单个承租人的原子核销逻辑（先息后本），并返回该客户的核销统计数据
      *
-     * @param tenantName
+     * @param lesseeName
      * @param receipts
      * @param plans
      * @return
      */
     @Transactional(rollbackFor = Exception.class)
-    public WriteOffStat processTenantWriteOff(String tenantName, List<BankReceipt> receipts, List<RentPlans> plans) {
+    public WriteOffStat processTenantWriteOff(String lesseeName, List<BankReceipt> receipts, List<RentPlans> plans) {
         List<WriteOffDetail> detailList = new ArrayList<>();
 
         // 用于记录当前客户本次核销累加的本金和利息
@@ -90,7 +90,7 @@ public class TenantWriteOffService {
                     detail.setId(IdUtil.fastSimpleUUID());
                     detail.setReceiptId(receipt.getId());
                     detail.setPlanId(plan.getId());
-                    detail.setTenantName(tenantName);
+                    detail.setLesseeName(lesseeName);
                     detail.setWriteOffInterest(writeOffInterest);
                     detail.setWriteOffPrincipal(writeOffPrincipal);
                     detail.setCreateTime(new Date());

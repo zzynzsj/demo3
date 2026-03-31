@@ -113,14 +113,14 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
 
         // 6. 并发执行
         List<CompletableFuture<Void>> futures = receiptGroup.entrySet().stream().map(entry -> {
-            String tenantName = entry.getKey();
+            String lesseeName = entry.getKey();
             List<BankReceipt> receipts = entry.getValue();
-            List<RentPlans> plans = planGroup.get(tenantName);
+            List<RentPlans> plans = planGroup.get(lesseeName);
 
             return CompletableFuture.runAsync(() -> {
                 if (CollUtil.isNotEmpty(plans)) {
                     // 调用内部事务方法，拿到该单客户的核销战果
-                    WriteOffStat stat = tenantWriteOffService.processTenantWriteOff(tenantName, receipts, plans);
+                    WriteOffStat stat = tenantWriteOffService.processTenantWriteOff(lesseeName, receipts, plans);
                     // 将该客户的战果汇总累加到全局统计中
                     totalCount.add(stat.getCount());
                     principalSum.add(stat.getPrincipal());

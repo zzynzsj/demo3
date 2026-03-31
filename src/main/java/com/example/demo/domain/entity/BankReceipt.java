@@ -6,7 +6,8 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 
 import java.math.BigDecimal;
-import java.util.Date;
+import java.time.LocalDate;
+import java.time.LocalTime;
 
 /**
  * 银行收款表
@@ -50,13 +51,13 @@ public class BankReceipt {
      * 付款日期
      */
     @TableField(value = "receipt_date")
-    private Date receiptDate;
+    private LocalDate receiptDate;
 
     /**
      * 付款时间
      */
     @TableField(value = "receipt_time")
-    private Date receiptTime;
+    private LocalTime receiptTime;
 
     /**
      * 已使用金额

@@ -37,8 +37,8 @@ public class WriteOffDetail {
     /**
      * 承租人名称
      */
-    @TableField(value = "tenant_name")
-    private String tenantName;
+    @TableField(value = "lessee_name")
+    private String lesseeName;
 
     /**
      * 本次核销本金

@@ -42,17 +42,17 @@ public class WriteOffConsumer {
     @RabbitListener(queues = MqConfig.QUEUE_NAME)
     public void receiveWriteOffTask(WriteOffMsgDto msgDto, Message message, Channel channel) throws IOException {
         long deliveryTag = message.getMessageProperties().getDeliveryTag();
-        String tenantName = msgDto.getLesseeName();
+        String lesseeName = msgDto.getLesseeName();
         String taskId = msgDto.getTaskId();
         String redisKey = "writeoff:status:" + taskId;
         try {
             // 1. 查询该承租人的待处理明细
             LambdaQueryWrapper<BankReceipt> receiptWrapper = new LambdaQueryWrapper<>();
-            receiptWrapper.lt(BankReceipt::getUseStatus, 2).eq(BankReceipt::getPayerAccountName, tenantName);
+            receiptWrapper.lt(BankReceipt::getUseStatus, 2).eq(BankReceipt::getPayerAccountName, lesseeName);
             List<BankReceipt> receipts = bankReceiptMapper.selectList(receiptWrapper);
 
             LambdaQueryWrapper<RentPlans> planWrapper = new LambdaQueryWrapper<>();
-            planWrapper.lt(RentPlans::getVerificationStatus, 2).eq(RentPlans::getLesseeName, tenantName);
+            planWrapper.lt(RentPlans::getVerificationStatus, 2).eq(RentPlans::getLesseeName, lesseeName);
             if (msgDto.getDueDateEnd() != null) {
                 planWrapper.le(RentPlans::getDueDate, msgDto.getDueDateEnd());
             }
@@ -60,7 +60,7 @@ public class WriteOffConsumer {
 
             // 2. 执行你写的核心逻辑，获取本次核销结果
             if (!receipts.isEmpty() && !plans.isEmpty()) {
-                WriteOffStat stat = tenantWriteOffService.processTenantWriteOff(tenantName, receipts, plans);
+                WriteOffStat stat = tenantWriteOffService.processTenantWriteOff(lesseeName, receipts, plans);
                 // 3. 实时汇总到Redis进度
                 // 笔数累加
                 stringRedisTemplate.opsForHash().increment(redisKey, "totalCount", stat.getCount());
@@ -68,7 +68,7 @@ public class WriteOffConsumer {
                 stringRedisTemplate.opsForHash()
                         .increment(redisKey, "totalPrincipal", stat.getPrincipal().doubleValue());
                 stringRedisTemplate.opsForHash().increment(redisKey, "totalInterest", stat.getInterest().doubleValue());
-                log.info("【后台任务】承租人 {} 核销成功，已更新 Redis 统计", tenantName);
+                log.info("【后台任务】承租人 {} 核销成功，已更新 Redis 统计", lesseeName);
             }
 
             // 标记本条消息处理完成
