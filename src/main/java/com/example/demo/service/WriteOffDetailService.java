@@ -5,6 +5,8 @@ import cn.hutool.core.util.IdUtil;
 import cn.hutool.core.util.ObjectUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.example.demo.config.MqConfig;
+import com.example.demo.domain.dto.WriteOffMsgDto;
 import com.example.demo.domain.dto.WriteOffReqDto;
 import com.example.demo.domain.dto.WriteOffRespDto;
 import com.example.demo.domain.dto.WriteOffStat;
@@ -15,8 +17,10 @@ import com.example.demo.mapper.BankReceiptMapper;
 import com.example.demo.mapper.RentPlansMapper;
 import com.example.demo.mapper.WriteOffDetailMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,6 +28,7 @@ import java.math.BigDecimal;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.stream.Collectors;
 
@@ -45,9 +50,12 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
     @Qualifier("writeOffExecutor")
     private Executor writeOffExecutor;
 
-    /**
-     * 批量执行核销任务入口
-     */
+    @Autowired
+    private RabbitTemplate rabbitTemplate;
+
+    @Autowired
+    private StringRedisTemplate stringRedisTemplate;
+
     /**
      * 批量执行核销任务入口
      */
@@ -56,21 +64,21 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
 
         log.info(">>> 开始准备核销数据...");
 
-        // 1. 构建收款单查询条件 (use_status: 0-未使用, 1-部分使用)
+        // 构建收款单查询条件 (use_status: 0-未使用, 1-部分使用)
         LambdaQueryWrapper<BankReceipt> receiptWrapper = new LambdaQueryWrapper<>();
         receiptWrapper.lt(BankReceipt::getUseStatus, 2);
 
-        // 2. 构建计划单查询条件 (verification_status: 0-未核销, 1-部分核销)
+        // 构建计划单查询条件 (verification_status: 0-未核销, 1-部分核销)
         LambdaQueryWrapper<RentPlans> planWrapper = new LambdaQueryWrapper<>();
         planWrapper.lt(RentPlans::getVerificationStatus, 2);
 
-        // 3. 动态拼接：指定承租人
+        // 指定承租人
         if (ObjectUtil.isNotEmpty(req.getLesseeName())) {
             receiptWrapper.eq(BankReceipt::getPayerAccountName, req.getLesseeName());
             planWrapper.eq(RentPlans::getLesseeName, req.getLesseeName());
         }
 
-        // 4. 动态拼接：指定应收截止日期
+        // 指定应收截止日期
         if (ObjectUtil.isNotNull(req.getDueDateEnd())) {
             planWrapper.le(RentPlans::getDueDate, req.getDueDateEnd());
         }
@@ -221,9 +229,9 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
 
         // 批量落库
         if (CollUtil.isNotEmpty(detailList)) {
-            // 1. 保存核销明细
+            // 保存核销明细
             this.saveBatch(detailList);
-            // 2. 更新收款单与计划单 (当前为 for 循环单条更新，后续若遇到性能瓶颈可替换为 XML 批量更新)
+            // 更新收款单与计划单
             for (BankReceipt r : receipts) {
                 bankReceiptMapper.updateById(r);
             }
@@ -236,6 +244,29 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
         return new WriteOffStat(detailList.size(), currentTenantPrincipalSum, currentTenantInterestSum);
     }
 
+    /**
+     * 提交异步核销任务
+     *
+     * @return 返回任务ID
+     */
+    public String submitAsyncWriteOffTask(WriteOffReqDto reqDto) {
+        // 生成任务ID
+        String taskId = "TASK_" + System.currentTimeMillis();
+        String redisKey = MqConfig.REDIS_STATUS_PREFIX + taskId;
+
+        // 封装 MQ 消息
+        WriteOffMsgDto msg = new WriteOffMsgDto(reqDto.getLesseeName(), reqDto.getDueDateEnd(), taskId);
+
+        // 投递到 MQ
+        rabbitTemplate.convertAndSend(MqConfig.EXCHANGE_NAME, MqConfig.ROUTING_KEY, msg);
+
+        // 初始化 Redis 进度
+        stringRedisTemplate.opsForHash().put(redisKey, "state", "RUNNING");
+        stringRedisTemplate.expire(redisKey, 24, TimeUnit.HOURS);
+
+        log.info("异步核销任务投递成功，taskId: {}", taskId);
+        return taskId;
+    }
 }
 
 

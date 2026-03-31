@@ -13,7 +13,7 @@ public class ThreadPoolConfig {
     @Bean("writeOffExecutor")
     public Executor writeOffExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        // 核心线程数：百万级数据建议设为 CPU 核心数的 2 倍
+        // 核心线程数
         executor.setCorePoolSize(Runtime.getRuntime().availableProcessors() * 2);
         executor.setMaxPoolSize(64);
         executor.setQueueCapacity(5000);
