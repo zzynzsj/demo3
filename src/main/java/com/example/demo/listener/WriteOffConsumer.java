@@ -80,7 +80,9 @@ public class WriteOffConsumer {
             log.error("【后台任务】处理失败", e);
             stringRedisTemplate.opsForHash().put(redisKey, "state", "FAILED");
             // 失败了让消息重回队列
-            channel.basicNack(deliveryTag, false, true);
+            // channel.basicNack(deliveryTag, false, true);
+            // 失败了直接丢弃 不能无限重试
+            channel.basicNack(deliveryTag, false, false);
         }
     }
 }
