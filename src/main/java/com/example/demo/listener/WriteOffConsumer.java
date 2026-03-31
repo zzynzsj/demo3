@@ -8,6 +8,7 @@ import com.example.demo.domain.entity.BankReceipt;
 import com.example.demo.domain.entity.RentPlans;
 import com.example.demo.mapper.BankReceiptMapper;
 import com.example.demo.mapper.RentPlansMapper;
+import com.example.demo.service.TenantWriteOffService;
 import com.example.demo.service.WriteOffDetailService;
 import com.rabbitmq.client.Channel;
 import lombok.extern.slf4j.Slf4j;
@@ -23,6 +24,8 @@ import java.util.List;
 @Component
 @Slf4j
 public class WriteOffConsumer {
+    @Autowired
+    private TenantWriteOffService tenantWriteOffService;
 
     @Autowired
     private WriteOffDetailService writeOffDetailService;
@@ -57,7 +60,7 @@ public class WriteOffConsumer {
 
             // 2. 执行你写的核心逻辑，获取本次核销结果
             if (!receipts.isEmpty() && !plans.isEmpty()) {
-                WriteOffStat stat = writeOffDetailService.processTenantWriteOff(tenantName, receipts, plans);
+                WriteOffStat stat = tenantWriteOffService.processTenantWriteOff(tenantName, receipts, plans);
                 // 3. 实时汇总到Redis进度
                 // 笔数累加
                 stringRedisTemplate.opsForHash().increment(redisKey, "totalCount", stat.getCount());
@@ -76,7 +79,7 @@ public class WriteOffConsumer {
         } catch (Exception e) {
             log.error("【后台任务】处理失败", e);
             stringRedisTemplate.opsForHash().put(redisKey, "state", "FAILED");
-            // 失败了让消息重回队列，体现了 MQ 的可靠性
+            // 失败了让消息重回队列
             channel.basicNack(deliveryTag, false, true);
         }
     }
