@@ -53,7 +53,6 @@ public class TestController {
         if (reqDto == null) {
             reqDto = new WriteOffReqDto();
         }
- 
         String taskId = writeOffDetailService.submitAsyncWriteOffTask(reqDto);
 
         return Result.success(taskId);

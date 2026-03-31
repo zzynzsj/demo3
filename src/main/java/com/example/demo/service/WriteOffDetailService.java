@@ -1,6 +1,7 @@
 package com.example.demo.service;
 
 import cn.hutool.core.collection.CollUtil;
+import cn.hutool.core.text.CharSequenceUtil;
 import cn.hutool.core.util.ObjectUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
@@ -152,21 +153,49 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
      * @return 返回任务ID
      */
     public String submitAsyncWriteOffTask(WriteOffReqDto reqDto) {
-        // 生成任务ID
         String taskId = "TASK_" + System.currentTimeMillis();
         String redisKey = MqConfig.REDIS_STATUS_PREFIX + taskId;
 
-        // 封装 MQ 消息
-        WriteOffMsgDto msg = new WriteOffMsgDto(reqDto.getLesseeName(), reqDto.getDueDateEnd(), taskId);
+        // 1. 确定本次要核销的客户名单
+        List<String> targetTenants = new ArrayList<>();
 
-        // 投递到 MQ
-        rabbitTemplate.convertAndSend(MqConfig.EXCHANGE_NAME, MqConfig.ROUTING_KEY, msg);
+        if (CharSequenceUtil.isNotBlank(reqDto.getLesseeName())) {
+            // 场景A：指定了单人，名单里就一个人
+            targetTenants.add(reqDto.getLesseeName());
+        } else {
+            // 场景B：全局一键核销，去库里捞出所有有“未使用余额”的客户名单 (只查名字)
+            LambdaQueryWrapper<BankReceipt> wrapper = new LambdaQueryWrapper<>();
+            wrapper.select(BankReceipt::getPayerAccountName);
+            wrapper.lt(BankReceipt::getUseStatus, 2);
+            wrapper.groupBy(BankReceipt::getPayerAccountName);
+            List<BankReceipt> pendingList = bankReceiptMapper.selectList(wrapper);
 
-        // 初始化 Redis 进度
+            if (CollUtil.isNotEmpty(pendingList)) {
+                targetTenants = pendingList.stream()
+                        .map(BankReceipt::getPayerAccountName)
+                        .collect(Collectors.toList());
+            }
+        }
+
+        if (CollUtil.isEmpty(targetTenants)) {
+            // 没人需要核销，直接秒成功
+            stringRedisTemplate.opsForHash().put(redisKey, "state", "SUCCESS");
+            return taskId;
+        }
+
+        // 2. 初始化 Redis 记分牌（增加总任务数记录）
         stringRedisTemplate.opsForHash().put(redisKey, "state", "RUNNING");
+        stringRedisTemplate.opsForHash().put(redisKey, "totalTaskCount", String.valueOf(targetTenants.size()));
+        stringRedisTemplate.opsForHash().put(redisKey, "finishedTaskCount", "0");
         stringRedisTemplate.expire(redisKey, 24, TimeUnit.HOURS);
 
-        log.info("异步核销任务投递成功，taskId: {}", taskId);
+        // 3. 万剑归宗：给每个客户单独发一条 MQ 消息
+        for (String tenant : targetTenants) {
+            WriteOffMsgDto msg = new WriteOffMsgDto(tenant, reqDto.getDueDateEnd(), taskId);
+            rabbitTemplate.convertAndSend(MqConfig.EXCHANGE_NAME, MqConfig.ROUTING_KEY, msg);
+        }
+
+        log.info("异步核销任务投递成功，taskId: {}，共拆分为 {} 个子任务", taskId, targetTenants.size());
         return taskId;
     }
 }

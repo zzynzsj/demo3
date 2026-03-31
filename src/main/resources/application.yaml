@@ -27,3 +27,8 @@ mybatis-plus:
 spring:
   profiles:
     active: dev
+  rabbitmq:
+    listener:
+      simple:
+        # 🌟 关键解药：强制开启手动确认模式，阻止 Spring 重复 ACK
+        acknowledge-mode: manual

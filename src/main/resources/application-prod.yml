@@ -32,10 +32,7 @@ spring:
     password: ${RABBITMQ_PWD}
     publisher-confirm-type: correlated
     publisher-returns: true
-    listener:
-      simple:
-        # 消费者手动确认模式，业务处理报错时不丢消息，可打回队列重试
-        acknowledge-mode: manual
+
 logging:
   level:
     com.com.example.demo: debug
