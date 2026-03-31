@@ -24,10 +24,8 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
+import java.math.RoundingMode;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
@@ -188,7 +186,8 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
         stringRedisTemplate.opsForHash().put(redisKey, "totalTaskCount", String.valueOf(targetTenants.size()));
         stringRedisTemplate.opsForHash().put(redisKey, "finishedTaskCount", "0");
         stringRedisTemplate.expire(redisKey, 24, TimeUnit.HOURS);
-
+        // 计算耗时
+        stringRedisTemplate.opsForHash().put(redisKey, "startTime", String.valueOf(System.currentTimeMillis()));
         // 3. 万剑归宗：给每个客户单独发一条 MQ 消息
         for (String tenant : targetTenants) {
             WriteOffMsgDto msg = new WriteOffMsgDto(tenant, reqDto.getDueDateEnd(), taskId);
@@ -197,6 +196,45 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
 
         log.info("异步核销任务投递成功，taskId: {}，共拆分为 {} 个子任务", taskId, targetTenants.size());
         return taskId;
+    }
+
+    /**
+     * 查询任务进度与耗时
+     */
+    public Map<String, Object> getTaskProgress(String taskId) {
+        String redisKey = MqConfig.REDIS_STATUS_PREFIX + taskId;
+
+        // 1. 查仓库
+        Map<Object, Object> rawStats = stringRedisTemplate.opsForHash().entries(redisKey);
+        if (rawStats.isEmpty()) {
+            return null; // 让上层去决定怎么报错
+        }
+
+        // 2. 数据清洗
+        Map<String, Object> resultData = new HashMap<>();
+        rawStats.forEach((k, v) -> resultData.put(String.valueOf(k), v));
+
+        // 3. 核心业务计算：动态耗时
+        if (resultData.containsKey("startTime")) {
+            long startTime = Long.parseLong(resultData.get("startTime").toString());
+            long endTime;
+
+            String state = resultData.getOrDefault("state", "RUNNING").toString();
+            if (("SUCCESS".equals(state) || "FAILED".equals(state) || "PARTIAL_SUCCESS".equals(state))
+                    && resultData.containsKey("endTime")) {
+                endTime = Long.parseLong(resultData.get("endTime").toString());
+            } else {
+                endTime = System.currentTimeMillis();
+            }
+
+            double costSeconds = (endTime - startTime) / 1000.0;
+            BigDecimal bd = new BigDecimal(costSeconds).setScale(3, RoundingMode.HALF_UP);
+            resultData.put("costTimeSeconds", bd.doubleValue());
+        } else {
+            resultData.put("costTimeSeconds", 0.0);
+        }
+
+        return resultData;
     }
 }
 

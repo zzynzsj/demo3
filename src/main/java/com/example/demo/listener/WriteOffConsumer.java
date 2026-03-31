@@ -96,6 +96,7 @@ public class WriteOffConsumer {
             Object totalObj = stringRedisTemplate.opsForHash().get(redisKey, "totalTaskCount");
 
             if (totalObj != null && finished >= Long.parseLong(totalObj.toString())) {
+                stringRedisTemplate.opsForHash().put(redisKey, "endTime", String.valueOf(System.currentTimeMillis()));
                 Object hasError = stringRedisTemplate.opsForHash().get(redisKey, "hasError");
                 if (hasError != null) {
                     stringRedisTemplate.opsForHash().put(redisKey, "state", "FAILED");

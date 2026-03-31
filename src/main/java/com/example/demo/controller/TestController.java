@@ -65,9 +65,12 @@ public class TestController {
      * @return 处理进度
      */
     @GetMapping("/progress/{taskId}")
-    public Result<Map<Object, Object>> getProgress(@PathVariable String taskId) {
-        // 直接从 Redis 拿，速度极快
-        Map<Object, Object> progress = stringRedisTemplate.opsForHash().entries("writeoff:status:" + taskId);
-        return Result.success(progress);
+    public Result<Map<String, Object>> getProgress(@PathVariable String taskId) {
+        // 查进度和算时间
+        Map<String, Object> progressData = writeOffDetailService.getTaskProgress(taskId);
+        if (progressData == null) {
+            return Result.error(500, "任务不存在或已过期清理");
+        }
+        return Result.success(progressData);
     }
 }
