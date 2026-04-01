@@ -8,7 +8,7 @@ import com.example.demo.domain.entity.BankReceipt;
 import com.example.demo.domain.entity.RentPlans;
 import com.example.demo.mapper.BankReceiptMapper;
 import com.example.demo.mapper.RentPlansMapper;
-import com.example.demo.service.TenantWriteOffService;
+import com.example.demo.service.LesseeWriteOffService;
 import com.rabbitmq.client.Channel;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.core.Message;
@@ -24,7 +24,7 @@ import java.util.List;
 public class WriteOffConsumer {
 
     @Autowired
-    private TenantWriteOffService tenantWriteOffService;
+    private LesseeWriteOffService lesseeWriteOffService;
 
     @Autowired
     private BankReceiptMapper bankReceiptMapper;
@@ -42,7 +42,7 @@ public class WriteOffConsumer {
         String taskId = msgDto.getTaskId();
         String redisKey = "writeoff:status:" + taskId;
 
-        // 🌟 核心状态位：记录业务到底有没有落库成功
+        // 记录业务到底有没有落库成功
         boolean isBusinessSuccess = false;
 
         // ================== 1. 核心业务处理区 (只管查库和算账) ==================
@@ -59,7 +59,7 @@ public class WriteOffConsumer {
             List<RentPlans> plans = rentPlansMapper.selectList(planWrapper);
 
             if (!receipts.isEmpty() && !plans.isEmpty()) {
-                WriteOffStat stat = tenantWriteOffService.processTenantWriteOff(lesseeName, receipts, plans);
+                WriteOffStat stat = lesseeWriteOffService.processLesseeWriteOff(lesseeName, receipts, plans);
 
                 stringRedisTemplate.opsForHash().increment(redisKey, "totalCount", stat.getCount());
                 stringRedisTemplate.opsForHash()
@@ -68,7 +68,7 @@ public class WriteOffConsumer {
                 log.info("【后台任务】承租人 {} 核销成功，已更新 Redis 统计", lesseeName);
             }
 
-            // 走到这里，说明 MySQL 事务绝对已经完美提交了！
+            // 走到这里，说明事务已经提交了
             isBusinessSuccess = true;
 
         } catch (Exception e) {

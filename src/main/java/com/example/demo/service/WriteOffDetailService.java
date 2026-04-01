@@ -57,7 +57,7 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
     private StringRedisTemplate stringRedisTemplate;
 
     @Autowired
-    private TenantWriteOffService tenantWriteOffService;
+    private LesseeWriteOffService lesseeWriteOffService;
 
     /**
      * 批量执行核销任务入口
@@ -67,21 +67,21 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
 
         log.info(">>> 开始准备核销数据...");
 
-        // 构建收款单查询条件 (use_status: 0-未使用, 1-部分使用)
+        // 部分使用和未使用的（0-未使用，1-部分使用，2-已使用）
         LambdaQueryWrapper<BankReceipt> receiptWrapper = new LambdaQueryWrapper<>();
         receiptWrapper.lt(BankReceipt::getUseStatus, 2);
 
-        // 构建计划单查询条件 (verification_status: 0-未核销, 1-部分核销)
+        // 部分核销和未核销（0-未核销，1-部分核销，2-已核销）
         LambdaQueryWrapper<RentPlans> planWrapper = new LambdaQueryWrapper<>();
         planWrapper.lt(RentPlans::getVerificationStatus, 2);
 
-        // 指定承租人
+        // 承租人
         if (ObjectUtil.isNotEmpty(req.getLesseeName())) {
             receiptWrapper.eq(BankReceipt::getPayerAccountName, req.getLesseeName());
             planWrapper.eq(RentPlans::getLesseeName, req.getLesseeName());
         }
 
-        // 指定应收截止日期
+        // 应收截止日期
         if (ObjectUtil.isNotNull(req.getDueDateEnd())) {
             planWrapper.le(RentPlans::getDueDate, req.getDueDateEnd());
         }
@@ -119,7 +119,7 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
             return CompletableFuture.runAsync(() -> {
                 if (CollUtil.isNotEmpty(plans)) {
                     // 调用内部事务方法，拿到该单客户的核销战果
-                    WriteOffStat stat = tenantWriteOffService.processTenantWriteOff(lesseeName, receipts, plans);
+                    WriteOffStat stat = lesseeWriteOffService.processLesseeWriteOff(lesseeName, receipts, plans);
                     // 将该客户的战果汇总累加到全局统计中
                     totalCount.add(stat.getCount());
                     principalSum.add(stat.getPrincipal());
@@ -155,11 +155,11 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
         String redisKey = MqConfig.REDIS_STATUS_PREFIX + taskId;
 
         // 1. 确定本次要核销的客户名单
-        List<String> targetTenants = new ArrayList<>();
+        List<String> targetLessees = new ArrayList<>();
 
         if (CharSequenceUtil.isNotBlank(reqDto.getLesseeName())) {
             // 场景A：指定了单人，名单里就一个人
-            targetTenants.add(reqDto.getLesseeName());
+            targetLessees.add(reqDto.getLesseeName());
         } else {
             // 场景B：全局一键核销，去库里捞出所有有“未使用余额”的客户名单 (只查名字)
             LambdaQueryWrapper<BankReceipt> wrapper = new LambdaQueryWrapper<>();
@@ -169,13 +169,13 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
             List<BankReceipt> pendingList = bankReceiptMapper.selectList(wrapper);
 
             if (CollUtil.isNotEmpty(pendingList)) {
-                targetTenants = pendingList.stream()
+                targetLessees = pendingList.stream()
                         .map(BankReceipt::getPayerAccountName)
                         .collect(Collectors.toList());
             }
         }
 
-        if (CollUtil.isEmpty(targetTenants)) {
+        if (CollUtil.isEmpty(targetLessees)) {
             // 没人需要核销，直接秒成功
             stringRedisTemplate.opsForHash().put(redisKey, "state", "SUCCESS");
             return taskId;
@@ -183,18 +183,18 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
 
         // 2. 初始化 Redis 记分牌（增加总任务数记录）
         stringRedisTemplate.opsForHash().put(redisKey, "state", "RUNNING");
-        stringRedisTemplate.opsForHash().put(redisKey, "totalTaskCount", String.valueOf(targetTenants.size()));
+        stringRedisTemplate.opsForHash().put(redisKey, "totalTaskCount", String.valueOf(targetLessees.size()));
         stringRedisTemplate.opsForHash().put(redisKey, "finishedTaskCount", "0");
         stringRedisTemplate.expire(redisKey, 24, TimeUnit.HOURS);
         // 计算耗时
         stringRedisTemplate.opsForHash().put(redisKey, "startTime", String.valueOf(System.currentTimeMillis()));
         // 3. 万剑归宗：给每个客户单独发一条 MQ 消息
-        for (String tenant : targetTenants) {
-            WriteOffMsgDto msg = new WriteOffMsgDto(tenant, reqDto.getDueDateEnd(), taskId);
+        for (String lessee : targetLessees) {
+            WriteOffMsgDto msg = new WriteOffMsgDto(lessee, reqDto.getDueDateEnd(), taskId);
             rabbitTemplate.convertAndSend(MqConfig.EXCHANGE_NAME, MqConfig.ROUTING_KEY, msg);
         }
 
-        log.info("异步核销任务投递成功，taskId: {}，共拆分为 {} 个子任务", taskId, targetTenants.size());
+        log.info("异步核销任务投递成功，taskId: {}，共拆分为 {} 个子任务", taskId, targetLessees.size());
         return taskId;
     }
 
