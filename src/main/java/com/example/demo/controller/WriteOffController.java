@@ -2,6 +2,7 @@ package com.example.demo.controller;
 
 import com.example.demo.annotation.RedisLock;
 import com.example.demo.common.Result;
+import com.example.demo.domain.dto.WriteOffProgressRespDto;
 import com.example.demo.domain.dto.WriteOffReqDto;
 import com.example.demo.domain.dto.WriteOffRespDto;
 import com.example.demo.service.WriteOffDetailService;
@@ -10,8 +11,6 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
-
-import java.util.Map;
 
 @RestController
 @RequestMapping("/api/v1/write-off")
@@ -61,9 +60,9 @@ public class WriteOffController {
      * @return 处理进度
      */
     @GetMapping("/progress/{taskId}")
-    public Result<Map<String, Object>> getProgress(@PathVariable String taskId) {
+    public Result<WriteOffProgressRespDto> getProgress(@PathVariable String taskId) {
         // 查进度和算时间
-        Map<String, Object> progressData = writeOffDetailService.getTaskProgress(taskId);
+        WriteOffProgressRespDto progressData = writeOffDetailService.getTaskProgress(taskId);
         if (progressData == null) {
             return Result.error(500, "任务不存在或已过期清理");
         }

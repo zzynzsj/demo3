@@ -6,10 +6,7 @@ import cn.hutool.core.util.ObjectUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.example.demo.config.MqConfig;
-import com.example.demo.domain.dto.WriteOffMsgDto;
-import com.example.demo.domain.dto.WriteOffReqDto;
-import com.example.demo.domain.dto.WriteOffRespDto;
-import com.example.demo.domain.dto.WriteOffStat;
+import com.example.demo.domain.dto.*;
 import com.example.demo.domain.entity.BankReceipt;
 import com.example.demo.domain.entity.RentPlans;
 import com.example.demo.domain.entity.WriteOffDetail;
@@ -25,7 +22,10 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
@@ -204,31 +204,71 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
     /**
      * 查询任务进度与耗时
      */
-    public Map<String, Object> getTaskProgress(String taskId) {
+ 
+    public WriteOffProgressRespDto getTaskProgress(String taskId) {
         String redisKey = MqConfig.REDIS_STATUS_PREFIX + taskId;
+
         Map<Object, Object> rawStats = stringRedisTemplate.opsForHash().entries(redisKey);
         if (rawStats.isEmpty()) {
             return null;
         }
-        Map<String, Object> resultData = new HashMap<>();
-        rawStats.forEach((k, v) -> resultData.put(String.valueOf(k), v));
-        if (resultData.containsKey("startTime")) {
-            long startTime = Long.parseLong(resultData.get("startTime").toString());
-            long endTime;
-            String state = resultData.getOrDefault("state", "RUNNING").toString();
-            if (("SUCCESS".equals(state) || "FAILED".equals(state) || "PARTIAL_SUCCESS".equals(state))
-                    && resultData.containsKey("endTime")) {
-                endTime = Long.parseLong(resultData.get("endTime").toString());
-            } else {
-                endTime = System.currentTimeMillis();
-            }
-            double costSeconds = (endTime - startTime) / 1000.0;
-            BigDecimal bd = new BigDecimal(costSeconds).setScale(3, RoundingMode.HALF_UP);
-            resultData.put("costTimeSeconds", bd.doubleValue());
+
+        // 1. 安全地从 Redis Map 中提取并转换基础数据
+        String state = getStr(rawStats, "state", "RUNNING");
+        Long totalTaskCount = getLong(rawStats, "totalTaskCount", 0L);
+        Long finishedTaskCount = getLong(rawStats, "finishedTaskCount", 0L);
+        Long totalCount = getLong(rawStats, "totalCount", 0L);
+        BigDecimal totalPrincipal = getBigDecimal(rawStats, "totalPrincipal", BigDecimal.ZERO);
+        BigDecimal totalInterest = getBigDecimal(rawStats, "totalInterest", BigDecimal.ZERO);
+
+        // 2. 动态耗时计算逻辑
+        long startTime = getLong(rawStats, "startTime", System.currentTimeMillis());
+        long endTime;
+
+        if (("SUCCESS".equals(state) || "FAILED".equals(state) || "PARTIAL_SUCCESS".equals(state))
+                && rawStats.containsKey("endTime")) {
+            endTime = getLong(rawStats, "endTime", System.currentTimeMillis());
         } else {
-            resultData.put("costTimeSeconds", 0.0);
+            endTime = System.currentTimeMillis();
         }
 
-        return resultData;
+        double costSeconds = (endTime - startTime) / 1000.0;
+        BigDecimal bd = new BigDecimal(costSeconds).setScale(3, RoundingMode.HALF_UP);
+
+        // 3. 构建并返回强类型响应对象
+        return WriteOffProgressRespDto.builder()
+                .state(state)
+                .totalTaskCount(totalTaskCount)
+                .finishedTaskCount(finishedTaskCount)
+                .totalCount(totalCount)
+                .totalPrincipal(totalPrincipal)
+                .totalInterest(totalInterest)
+                .costTimeSeconds(bd.doubleValue())
+                .build();
+    }
+
+    // ================== 下方为私有安全转换辅助方法 ==================
+
+    private String getStr(Map<Object, Object> map, String key, String defaultValue) {
+        Object value = map.get(key);
+        return value != null ? value.toString() : defaultValue;
+    }
+
+    private Long getLong(Map<Object, Object> map, String key, Long defaultValue) {
+        Object value = map.get(key);
+        try {
+            return value != null ? Long.parseLong(value.toString()) : defaultValue;
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
+    }
+
+    private BigDecimal getBigDecimal(Map<Object, Object> map, String key, BigDecimal defaultValue) {
+        Object value = map.get(key);
+        try {
+            return value != null ? new BigDecimal(value.toString()) : defaultValue;
+        } catch (Exception e) {
+            return defaultValue;
+        }
     }
 }
