@@ -49,7 +49,7 @@ public class WriteOffConsumer {
         // 状态标志位，用于在catch及finally中判断数据库务是否真正完成，以隔离异常
         boolean isBusinessSuccess = false;
 
-        // ================== 1. 核心业务处理区 ==================
+        //  1.核心业务处理
         try {
             // 幂等性控制：由于分布式系统中可能存在消息重试机制，此处必须实时读取数据库
             // 若该承租人数据已被其他线程或重试线程核销，查询返回的list将为空，从而跳过后续逻辑
@@ -85,7 +85,7 @@ public class WriteOffConsumer {
             stringRedisTemplate.opsForHash().put(redisKey, "hasError", "true");
         }
 
-        // ================== 2. MQ 消息确认区 ==================
+        // 2.MQ消息确认
         try {
             if (isBusinessSuccess) {
                 // 发送肯定确认
@@ -103,7 +103,7 @@ public class WriteOffConsumer {
                     mqEx.getMessage());
         }
 
-        // ================== 3. 全局进度更新与状态收尾区 ==================
+        // 3.全局进度更新
         try {
             // increment 返回的是累加后的最新数值
             Long finished = stringRedisTemplate.opsForHash().increment(redisKey, "finishedTaskCount", 1);
