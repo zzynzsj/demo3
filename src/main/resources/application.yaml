@@ -4,7 +4,7 @@ springdoc:
       enabled: true
   # 分组配置
   group-configs:
-    - group: 测试(test)
+    - group: 核销(write-off)
       paths-to-match: [ /api/v1/write-off/** ]
   swagger-ui:
     disable-swagger-default-url: true
