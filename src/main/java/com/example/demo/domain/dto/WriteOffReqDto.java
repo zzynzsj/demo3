@@ -10,9 +10,7 @@ import org.springframework.format.annotation.DateTimeFormat;
 import java.time.LocalDate;
 
 /**
- * @author zzy
- * @description 核销请求参数
- * @createDate 2026-03-30 23:08:50
+ * 核销请求参数
  */
 @Data
 @AllArgsConstructor

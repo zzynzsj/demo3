@@ -18,7 +18,7 @@ public class ThreadPoolConfig {
         executor.setMaxPoolSize(64);
         executor.setQueueCapacity(5000);
         executor.setThreadNamePrefix("WriteOff-Task-");
-        // 拒绝策略：由调用者线程执行，保证百万级数据处理不丢失
+        // 拒绝策略：由调用者线程执行，数据处理不丢失
         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
         executor.initialize();
         return executor;

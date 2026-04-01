@@ -8,7 +8,7 @@ import org.springframework.stereotype.Service;
 /**
  * @author zzy
  * @description 针对表【rent_plans(租金计划表（应收）)】的数据库操作Service实现
- * @createDate 2026-03-30 17:54:50
+ * @createDate 2026-03-31 17:54:50
  */
 @Service
 public class RentPlansService extends ServiceImpl<RentPlansMapper, RentPlans> {

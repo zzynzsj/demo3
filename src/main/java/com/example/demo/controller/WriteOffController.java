@@ -9,21 +9,17 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
 
 @RestController
-@RequestMapping("/api/v1/test")
-@Tag(name = "测试", description = "TestController")
+@RequestMapping("/api/v1/write-off")
+@Tag(name = "核销", description = "WriteOffController")
 @Slf4j
-public class TestController {
+public class WriteOffController {
     @Autowired
     private WriteOffDetailService writeOffDetailService;
-
-    @Autowired
-    private StringRedisTemplate stringRedisTemplate;
 
     /**
      * 触发批量核销任务

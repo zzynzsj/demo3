@@ -34,8 +34,8 @@ import java.util.stream.Collectors;
 
 /**
  * @author zzy
- * @description 针对表【bank_receipt(银行收款表)】的数据库操作Service实现
- * @createDate 2026-03-30 23:08:50
+ * @description 针对表【write_off_detail(核销明细流水表)】的数据库操作Service实现
+ * @createDate 2026-03-31 21:08:50
  */
 @Service
 @Slf4j
@@ -60,29 +60,27 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
     private LesseeWriteOffService lesseeWriteOffService;
 
     /**
-     * 批量执行核销任务入口
+     * 基于线程池的同步批量核销方法（老版本）
      */
     public WriteOffRespDto executeBatchWriteOff(WriteOffReqDto req) {
         long startTime = System.currentTimeMillis();
-
         log.info(">>> 开始准备核销数据...");
-
-        // 部分使用和未使用的（0-未使用，1-部分使用，2-已使用）
         LambdaQueryWrapper<BankReceipt> receiptWrapper = new LambdaQueryWrapper<>();
+        //  use_status < 2，仅过滤出状态为0-未使用,1-部分使用的记录。
         receiptWrapper.lt(BankReceipt::getUseStatus, 2);
 
-        // 部分核销和未核销（0-未核销，1-部分核销，2-已核销）
         LambdaQueryWrapper<RentPlans> planWrapper = new LambdaQueryWrapper<>();
+        //  verification_status < 2，仅过滤出状态为0-未核销,1-部分核销的记录。
         planWrapper.lt(RentPlans::getVerificationStatus, 2);
 
-        // 承租人
+        // 承租人名称
         if (ObjectUtil.isNotEmpty(req.getLesseeName())) {
             receiptWrapper.eq(BankReceipt::getPayerAccountName, req.getLesseeName());
             planWrapper.eq(RentPlans::getLesseeName, req.getLesseeName());
         }
 
-        // 应收截止日期
         if (ObjectUtil.isNotNull(req.getDueDateEnd())) {
+            // 限制应收日期早于或等于前端传入的截止日期。
             planWrapper.le(RentPlans::getDueDate, req.getDueDateEnd());
         }
 
@@ -98,29 +96,31 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
                     .totalInterest(BigDecimal.ZERO)
                     .build();
         }
-
-        // 5. 内存分组：收款单按付款人，计划单按承租人
+        // 将扁平的数据列表按“承租人名称”转换为 Map 分组结构，实现基于承租人维度的数据隔离，为后续的多线程并发处理提供基础。
         Map<String, List<BankReceipt>> receiptGroup = allReceipts.stream()
                 .collect(Collectors.groupingBy(BankReceipt::getPayerAccountName));
         Map<String, List<RentPlans>> planGroup = allPlans.stream()
                 .collect(Collectors.groupingBy(RentPlans::getLesseeName));
-        // 使用线程安全的累加器
+
+        // LongAdder累加器，用于统计核销总笔数。
         LongAdder totalCount = new LongAdder();
-        // BigDecimal 在多线程下累加需要特殊处理，这里我们定义两个对象
+
+        // Collections.synchronizedList() 将非线程安全的 ArrayList 包装为线程安全的集合。
+        // 因为后续的 CompletableFuture 会在多线程环境中同时向这两个集合中添加元素。
         final List<BigDecimal> principalSum = Collections.synchronizedList(new ArrayList<>());
         final List<BigDecimal> interestSum = Collections.synchronizedList(new ArrayList<>());
 
-        // 6. 并发执行
+        // 将每个承租人的核销逻辑封装为一个异步任务。
+        // 遍历 receiptGroup (按承租人分组后的 Map)，将其映射为多个独立的并发任务。
         List<CompletableFuture<Void>> futures = receiptGroup.entrySet().stream().map(entry -> {
             String lesseeName = entry.getKey();
             List<BankReceipt> receipts = entry.getValue();
             List<RentPlans> plans = planGroup.get(lesseeName);
 
+            // CompletableFuture.runAsync() 将任务提交给自定义的 writeOffExecutor 线程池执行。
             return CompletableFuture.runAsync(() -> {
                 if (CollUtil.isNotEmpty(plans)) {
-                    // 调用内部事务方法，拿到该单客户的核销战果
                     WriteOffStat stat = lesseeWriteOffService.processLesseeWriteOff(lesseeName, receipts, plans);
-                    // 将该客户的战果汇总累加到全局统计中
                     totalCount.add(stat.getCount());
                     principalSum.add(stat.getPrincipal());
                     interestSum.add(stat.getInterest());
@@ -128,9 +128,10 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
             }, writeOffExecutor);
         }).collect(Collectors.toList());
 
-        // 阻塞主线程，等待线程池中所有子任务执行完毕
+        // CompletableFuture.allOf().join() 会阻塞当前主线程，等待上述列表中的所有子线程任务执行完毕，以确保数据完整收集。
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-        // 计算总金额
+
+        // reduce将集合中的所有BigDecimal累加求和。
         BigDecimal totalP = principalSum.stream().reduce(BigDecimal.ZERO, BigDecimal::add);
         BigDecimal totalI = interestSum.stream().reduce(BigDecimal.ZERO, BigDecimal::add);
         double duration = (System.currentTimeMillis() - startTime) / 1000.0;
@@ -146,22 +147,22 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
     }
 
     /**
-     * 提交异步核销任务
+     * 异步核销任务提交入口（基于 RabbitMQ 与 Redis）
      *
-     * @return 返回任务ID
+     * @return 返回全局唯一任务ID
      */
     public String submitAsyncWriteOffTask(WriteOffReqDto reqDto) {
+        // 基于当前系统时间戳生成全局唯一任务id，并构建与之对应的 Redis 状态记录键名
         String taskId = "TASK_" + System.currentTimeMillis();
         String redisKey = MqConfig.REDIS_STATUS_PREFIX + taskId;
 
-        // 1. 确定本次要核销的客户名单
         List<String> targetLessees = new ArrayList<>();
 
         if (CharSequenceUtil.isNotBlank(reqDto.getLesseeName())) {
-            // 场景A：指定了单人，名单里就一个人
+            // 指定承租人核销场景。
             targetLessees.add(reqDto.getLesseeName());
         } else {
-            // 场景B：全局一键核销，去库里捞出所有有“未使用余额”的客户名单 (只查名字)
+            // 全局一键核销场景：通过 groupBy 去重查询当前收款单表中存在未使用/部分使用余额的所有承租人名称
             LambdaQueryWrapper<BankReceipt> wrapper = new LambdaQueryWrapper<>();
             wrapper.select(BankReceipt::getPayerAccountName);
             wrapper.lt(BankReceipt::getUseStatus, 2);
@@ -176,21 +177,23 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
         }
 
         if (CollUtil.isEmpty(targetLessees)) {
-            // 没人需要核销，直接秒成功
+            // 边缘情况处理：如无可处理客户，直接初始化Redis最终成功状态，避免后续空转
             stringRedisTemplate.opsForHash().put(redisKey, "state", "SUCCESS");
             return taskId;
         }
 
-        // 2. 初始化 Redis 记分牌（增加总任务数记录）
+        // 初始化 Redis Hash 数据结构，存储该任务的元数据，供前端轮询查询
         stringRedisTemplate.opsForHash().put(redisKey, "state", "RUNNING");
         stringRedisTemplate.opsForHash().put(redisKey, "totalTaskCount", String.valueOf(targetLessees.size()));
         stringRedisTemplate.opsForHash().put(redisKey, "finishedTaskCount", "0");
+        // 设置 Redis Key 的过期时间为 24 小时，防止历史任务堆积导致内存溢出
         stringRedisTemplate.expire(redisKey, 24, TimeUnit.HOURS);
-        // 计算耗时
         stringRedisTemplate.opsForHash().put(redisKey, "startTime", String.valueOf(System.currentTimeMillis()));
-        // 3. 万剑归宗：给每个客户单独发一条 MQ 消息
+
+        // 将目标承租人名单拆分，通过RabbitTemplate将每一个承租人的核销参数封装为消息投递至Exchange
         for (String lessee : targetLessees) {
             WriteOffMsgDto msg = new WriteOffMsgDto(lessee, reqDto.getDueDateEnd(), taskId);
+            // 发送
             rabbitTemplate.convertAndSend(MqConfig.EXCHANGE_NAME, MqConfig.ROUTING_KEY, msg);
         }
 
@@ -203,22 +206,15 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
      */
     public Map<String, Object> getTaskProgress(String taskId) {
         String redisKey = MqConfig.REDIS_STATUS_PREFIX + taskId;
-
-        // 1. 查仓库
         Map<Object, Object> rawStats = stringRedisTemplate.opsForHash().entries(redisKey);
         if (rawStats.isEmpty()) {
-            return null; // 让上层去决定怎么报错
+            return null;
         }
-
-        // 2. 数据清洗
         Map<String, Object> resultData = new HashMap<>();
         rawStats.forEach((k, v) -> resultData.put(String.valueOf(k), v));
-
-        // 3. 核心业务计算：动态耗时
         if (resultData.containsKey("startTime")) {
             long startTime = Long.parseLong(resultData.get("startTime").toString());
             long endTime;
-
             String state = resultData.getOrDefault("state", "RUNNING").toString();
             if (("SUCCESS".equals(state) || "FAILED".equals(state) || "PARTIAL_SUCCESS".equals(state))
                     && resultData.containsKey("endTime")) {
@@ -226,7 +222,6 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
             } else {
                 endTime = System.currentTimeMillis();
             }
-
             double costSeconds = (endTime - startTime) / 1000.0;
             BigDecimal bd = new BigDecimal(costSeconds).setScale(3, RoundingMode.HALF_UP);
             resultData.put("costTimeSeconds", bd.doubleValue());
@@ -237,7 +232,3 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
         return resultData;
     }
 }
-
-
-
-
