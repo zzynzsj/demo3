@@ -30,7 +30,7 @@ spring:
   rabbitmq:
     listener:
       simple:
-        # 强制开启手动确认模式，阻止 Spring 重复 ACK
+        # 强制开启手动确认模式，阻止 Spring重复ACK
         acknowledge-mode: manual
         concurrency: 10
         max-concurrency: 50

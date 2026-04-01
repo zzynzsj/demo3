@@ -6,7 +6,6 @@ spring:
       url: jdbc:mysql://${DB_HOST:172.17.0.1}:${DB_PORT:3306}/${DB_NAME:demo3}?useSSL=false&serverTimezone=GMT%2B8&useUnicode=true&characterEncoding=utf-8&allowPublicKeyRetrieval=true&allowMultiQueries=true&rewriteBatchedStatements=true
       username: ${DB_USER:root}
       password: ${DB_PWD}
-      # 百万级核销高并发连接池调优
       initial-size: 10
       min-idle: 10
       max-active: 100
