@@ -67,7 +67,7 @@ public class WriteOffConsumer {
             if (!receipts.isEmpty() && !plans.isEmpty()) {
                 WriteOffStat stat = lesseeWriteOffService.processLesseeWriteOff(lesseeName, receipts, plans);
 
-                // 在多节点/多线程并发写入时，能够确保统计数据的强一致性，避免覆盖丢失。
+                // 在多线程并发写入时，能够确保统计数据的强一致性，避免覆盖丢失。
                 // 自增
                 stringRedisTemplate.opsForHash().increment(redisKey, "totalCount", stat.getCount());
                 stringRedisTemplate.opsForHash()

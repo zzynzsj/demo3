@@ -20,8 +20,7 @@ public class RedisLockAspect {
 
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
-
-    // 拦截所有贴了 @RedisLock 注解的方法
+ 
     @Around("@annotation(redisLock)")
     public Object around(ProceedingJoinPoint joinPoint, RedisLock redisLock) throws Throwable {
 

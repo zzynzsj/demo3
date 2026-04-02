@@ -96,7 +96,7 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
                     .totalInterest(BigDecimal.ZERO)
                     .build();
         }
-        // 将扁平的数据列表按“承租人名称”转换为 Map 分组结构，实现基于承租人维度的数据隔离，为后续的多线程并发处理提供基础。
+        // 将扁平的数据列表按承租人名称转换为 Map 分组结构，实现基于承租人维度的数据隔离，为后续的多线程并发处理提供基础。
         Map<String, List<BankReceipt>> receiptGroup = allReceipts.stream()
                 .collect(Collectors.groupingBy(BankReceipt::getPayerAccountName));
         Map<String, List<RentPlans>> planGroup = allPlans.stream()
@@ -167,8 +167,9 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
             wrapper.select(BankReceipt::getPayerAccountName);
             wrapper.lt(BankReceipt::getUseStatus, 2);
             wrapper.groupBy(BankReceipt::getPayerAccountName);
+            // 查询所有待核销的收款单
             List<BankReceipt> pendingList = bankReceiptMapper.selectList(wrapper);
-
+            // 如果不为空，则将所有待核销的收款单的所属租户名称添加到目标列表中
             if (CollUtil.isNotEmpty(pendingList)) {
                 targetLessees = pendingList.stream()
                         .map(BankReceipt::getPayerAccountName)
@@ -182,15 +183,15 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
             return taskId;
         }
 
-        // 初始化 Redis Hash 数据结构，存储该任务的元数据，供前端轮询查询
+        // 初始化RedisHash数据结构，存储该任务的元数据，供前端轮询查询
         stringRedisTemplate.opsForHash().put(redisKey, "state", "RUNNING");
         stringRedisTemplate.opsForHash().put(redisKey, "totalTaskCount", String.valueOf(targetLessees.size()));
         stringRedisTemplate.opsForHash().put(redisKey, "finishedTaskCount", "0");
-        // 设置 Redis Key 的过期时间为 24 小时，防止历史任务堆积导致内存溢出
+        // 设置RedisKey的过期时间为 24 小时，防止历史任务堆积导致内存溢出
         stringRedisTemplate.expire(redisKey, 24, TimeUnit.HOURS);
         stringRedisTemplate.opsForHash().put(redisKey, "startTime", String.valueOf(System.currentTimeMillis()));
 
-        // 将目标承租人名单拆分，通过RabbitTemplate将每一个承租人的核销参数封装为消息投递至Exchange
+        // 将目标承租人名单拆分，通过rabbitTemplate将每一个承租人的核销参数封装为消息投递至Exchange
         for (String lessee : targetLessees) {
             WriteOffMsgDto msg = new WriteOffMsgDto(lessee, reqDto.getDueDateEnd(), taskId);
             // 发送
@@ -204,10 +205,8 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
     /**
      * 查询任务进度与耗时
      */
- 
     public WriteOffProgressRespDto getTaskProgress(String taskId) {
         String redisKey = MqConfig.REDIS_STATUS_PREFIX + taskId;
-
         Map<Object, Object> rawStats = stringRedisTemplate.opsForHash().entries(redisKey);
         if (rawStats.isEmpty()) {
             return null;
