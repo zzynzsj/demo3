@@ -168,11 +168,18 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
             wrapper.lt(BankReceipt::getUseStatus, 2);
             wrapper.groupBy(BankReceipt::getPayerAccountName);
             // 查询所有待核销的收款单
-            List<BankReceipt> pendingList = bankReceiptMapper.selectList(wrapper);
-            // 如果不为空，则将所有待核销的收款单的所属租户名称添加到目标列表中
-            if (CollUtil.isNotEmpty(pendingList)) {
-                targetLessees = pendingList.stream()
-                        .map(BankReceipt::getPayerAccountName)
+            // List<BankReceipt> pendingList = bankReceiptMapper.selectList(wrapper);
+            // // 如果不为空，则将所有待核销的收款单的所属租户名称添加到目标列表中
+            // if (CollUtil.isNotEmpty(pendingList)) {
+            //     targetLessees = pendingList.stream()
+            //             .map(BankReceipt::getPayerAccountName)
+            //             .collect(Collectors.toList());
+            // }
+            // 一查就崩
+            List<Object> pendingObjs = bankReceiptMapper.selectObjs(wrapper);
+            if (CollUtil.isNotEmpty(pendingObjs)) {
+                targetLessees = pendingObjs.stream()
+                        .map(Object::toString)
                         .collect(Collectors.toList());
             }
         }

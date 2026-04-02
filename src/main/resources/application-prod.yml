@@ -12,7 +12,7 @@ spring:
       max-wait: 10000
       test-on-borrow: true
       validation-query: SELECT 1
-  # 2. Redis 配置 (直连同堆栈下的 demo3-redis 容器)
+  # Redis 配置 (直连同堆栈下的 demo3-redis 容器)
   redis:
     host: ${SPRING_REDIS_HOST:demo3-redis}
     port: 6379
@@ -23,14 +23,15 @@ spring:
         max-wait: -1ms
         max-idle: 8
         min-idle: 0
-  # 3. RabbitMQ 配置 (直连同堆栈下的 demo3-mq 容器)
+  # RabbitMQ配置(直连同堆栈下的 demo3-mq 容器)
   rabbitmq:
     host: ${SPRING_RABBITMQ_HOST:demo3-mq}
     port: 5672
     username: ${RABBITMQ_USER:admin}
     password: ${RABBITMQ_PWD}
-    publisher-confirm-type: correlated
-    publisher-returns: true
+    # 关闭投递确认 防止底层 Map 撑爆内存
+    #publisher-confirm-type: correlated
+    # publisher-returns: true
 
 logging:
   level:
