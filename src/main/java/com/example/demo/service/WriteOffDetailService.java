@@ -187,18 +187,34 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
         stringRedisTemplate.opsForHash().put(redisKey, "state", "RUNNING");
         stringRedisTemplate.opsForHash().put(redisKey, "totalTaskCount", String.valueOf(targetLessees.size()));
         stringRedisTemplate.opsForHash().put(redisKey, "finishedTaskCount", "0");
-        // 设置RedisKey的过期时间为 24 小时，防止历史任务堆积导致内存溢出
+        // 设置key的过期时间为24小时
         stringRedisTemplate.expire(redisKey, 24, TimeUnit.HOURS);
         stringRedisTemplate.opsForHash().put(redisKey, "startTime", String.valueOf(System.currentTimeMillis()));
 
         // 将目标承租人名单拆分，通过rabbitTemplate将每一个承租人的核销参数封装为消息投递至Exchange
-        for (String lessee : targetLessees) {
-            WriteOffMsgDto msg = new WriteOffMsgDto(lessee, reqDto.getDueDateEnd(), taskId);
-            // 发送
-            rabbitTemplate.convertAndSend(MqConfig.EXCHANGE_NAME, MqConfig.ROUTING_KEY, msg);
-        }
+        // 异步发送MQ消息
+        // 创建一个 final 的局部变量，把名单传给它
+        final List<String> finalTargetLessees = targetLessees;
+        CompletableFuture.runAsync(() -> {
+            for (int i = 0; i < finalTargetLessees.size(); i++) {
+                String lessee = finalTargetLessees.get(i);
+                WriteOffMsgDto msg = new WriteOffMsgDto(lessee, reqDto.getDueDateEnd(), taskId);
+                rabbitTemplate.convertAndSend(MqConfig.EXCHANGE_NAME, MqConfig.ROUTING_KEY, msg);
+                // 限流,服务器太拉了
+                if (i > 0 && i % 1000 == 0) {
+                    try {
+                        TimeUnit.MILLISECONDS.sleep(50);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }
+            log.info("========= 异步任务 MQ 投递彻底完成，taskId: {}，共投递 {} 个子任务 =========", taskId,
+                    finalTargetLessees.size());
+        }, writeOffExecutor);
 
-        log.info("异步核销任务投递成功，taskId: {}，共拆分为 {} 个子任务", taskId, targetLessees.size());
+        // 主线程不等待消息发完，直接秒回给前端！
+        log.info("已触发后台投递线程，立刻向前端返回 taskId: {}", taskId);
         return taskId;
     }
 
