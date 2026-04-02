@@ -9,10 +9,6 @@ springdoc:
   swagger-ui:
     disable-swagger-default-url: true
 
-logging:
-  level:
-    com.example.demo: debug
-
 #mybatis-plus
 mybatis-plus:
   type-aliases-package: com.example.demo.domain
@@ -20,6 +16,8 @@ mybatis-plus:
   configuration:
     call-setters-on-nulls: true
     jdbc-type-for-null: 'null'
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl # 开启SQL日志，观察是否真是批量
+    default-executor-type: batch # 尝试设置为BATCH执行器
   global-config:
     db-config:
       # 全局统一下雪花算法主键
@@ -30,8 +28,8 @@ spring:
   rabbitmq:
     listener:
       simple:
-        # 强制开启手动确认模式，阻止 Spring重复ACK
+        # 强制开启手动确认模式，阻止Spring重复ACK
         acknowledge-mode: manual
-        concurrency: 2
+        concurrency: 50
         max-concurrency: 50
-        prefetch: 5
+        prefetch: 100

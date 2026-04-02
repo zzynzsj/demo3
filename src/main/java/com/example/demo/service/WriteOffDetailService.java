@@ -202,22 +202,35 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
         // 异步发送MQ消息
         // 创建一个 final 的局部变量，把名单传给它
         final List<String> finalTargetLessees = targetLessees;
+        // CompletableFuture.runAsync(() -> {
+        //     for (int i = 0; i < finalTargetLessees.size(); i++) {
+        //         String lessee = finalTargetLessees.get(i);
+        //         WriteOffMsgDto msg = new WriteOffMsgDto(lessee, reqDto.getDueDateEnd(), taskId);
+        //         rabbitTemplate.convertAndSend(MqConfig.EXCHANGE_NAME, MqConfig.ROUTING_KEY, msg);
+        //         // 限流,服务器太拉了
+        //         // if (i > 0 && i % 3000 == 0) {
+        //         //     try {
+        //         //         TimeUnit.MILLISECONDS.sleep(30);
+        //         //     } catch (InterruptedException e) {
+        //         //         Thread.currentThread().interrupt();
+        //         //     }
+        //         // }
+        //     }
+        //     log.info("========= 异步任务 MQ 投递彻底完成，taskId: {}，共投递 {} 个子任务 =========", taskId,
+        //             finalTargetLessees.size());
+        // }, writeOffExecutor);
+        // List<CompletableFuture<Void>> sendFutures = targetLessees.stream()
+        //         .map(lessee -> CompletableFuture.runAsync(() -> {
+        //             WriteOffMsgDto msg = new WriteOffMsgDto(lessee, reqDto.getDueDateEnd(), taskId);
+        //             rabbitTemplate.convertAndSend(MqConfig.EXCHANGE_NAME, MqConfig.ROUTING_KEY, msg);
+        //         }, writeOffExecutor))
+        //         .collect(Collectors.toList());
         CompletableFuture.runAsync(() -> {
-            for (int i = 0; i < finalTargetLessees.size(); i++) {
-                String lessee = finalTargetLessees.get(i);
+            // 这是一个异步线程，内部使用【并行】流或CompletableFuture集合
+            finalTargetLessees.parallelStream().forEach(lessee -> {
                 WriteOffMsgDto msg = new WriteOffMsgDto(lessee, reqDto.getDueDateEnd(), taskId);
-                rabbitTemplate.convertAndSend(MqConfig.EXCHANGE_NAME, MqConfig.ROUTING_KEY, msg);
-                // 限流,服务器太拉了
-                if (i > 0 && i % 1000 == 0) {
-                    try {
-                        TimeUnit.MILLISECONDS.sleep(50);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
-                }
-            }
-            log.info("========= 异步任务 MQ 投递彻底完成，taskId: {}，共投递 {} 个子任务 =========", taskId,
-                    finalTargetLessees.size());
+                rabbitTemplate.convertAndSend(MqConfig.EXCHANGE_NAME, MqConfig.ROUTING_KEY, msg); // 并行发送
+            });
         }, writeOffExecutor);
 
         // 主线程不等待消息发完，直接秒回给前端！
