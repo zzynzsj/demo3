@@ -144,4 +144,85 @@ public class LesseeWriteOffService {
         }
         return new WriteOffStat(detailList.size(), currentLesseePrincipalSum, currentLesseeInterestSum);
     }
+
+    /**
+     * 纯内存计算逻辑：不再查表，不再存表
+     */
+    public WriteOffStat calculateMemoryWriteOff(String lesseeName,
+                                                List<BankReceipt> receipts,
+                                                List<RentPlans> plans,
+                                                List<WriteOffDetail> globalDetails) {
+
+        BigDecimal lesseePrincipal = BigDecimal.ZERO;
+        BigDecimal lesseeInterest = BigDecimal.ZERO;
+        int count = 0;
+
+        // 排序逻辑保留
+        receipts.sort(Comparator.comparing(BankReceipt::getReceiptDate));
+        plans.sort(Comparator.comparing(RentPlans::getDueDate));
+
+        for (BankReceipt receipt : receipts) {
+            BigDecimal availableAmount = receipt.getReceiptAmount().subtract(receipt.getUsedAmount());
+
+            for (RentPlans plan : plans) {
+                if (availableAmount.compareTo(BigDecimal.ZERO) <= 0) {
+                    break;
+                }
+                if (ObjectUtil.equal(plan.getVerificationStatus(), 2)) {
+                    continue;
+                }
+
+                BigDecimal needInterest = plan.getInterestAmount().subtract(plan.getReceivedInterest());
+                BigDecimal needPrincipal = plan.getPrincipalAmount().subtract(plan.getReceivedPrincipal());
+
+                BigDecimal writeOffInterest = BigDecimal.ZERO;
+                BigDecimal writeOffPrincipal = BigDecimal.ZERO;
+
+                // 先息后本规则
+                if (needInterest.compareTo(BigDecimal.ZERO) > 0) {
+                    writeOffInterest = availableAmount.min(needInterest);
+                    plan.setReceivedInterest(plan.getReceivedInterest().add(writeOffInterest));
+                    availableAmount = availableAmount.subtract(writeOffInterest);
+                }
+
+                if (availableAmount.compareTo(BigDecimal.ZERO) > 0 && needPrincipal.compareTo(BigDecimal.ZERO) > 0) {
+                    writeOffPrincipal = availableAmount.min(needPrincipal);
+                    plan.setReceivedPrincipal(plan.getReceivedPrincipal().add(writeOffPrincipal));
+                    availableAmount = availableAmount.subtract(writeOffPrincipal);
+                }
+
+                if (writeOffInterest.add(writeOffPrincipal).compareTo(BigDecimal.ZERO) > 0) {
+                    WriteOffDetail detail = new WriteOffDetail();
+                    detail.setId(IdUtil.fastSimpleUUID());
+                    detail.setReceiptId(receipt.getId());
+                    detail.setPlanId(plan.getId());
+                    detail.setLesseeName(lesseeName);
+                    detail.setWriteOffInterest(writeOffInterest);
+                    detail.setWriteOffPrincipal(writeOffPrincipal);
+                    detail.setCreateTime(new Date());
+
+                    // 放入全局大容器
+                    globalDetails.add(detail);
+
+                    count++;
+                    lesseeInterest = lesseeInterest.add(writeOffInterest);
+                    lesseePrincipal = lesseePrincipal.add(writeOffPrincipal);
+
+                    // 更新状态位
+                    if (plan.getReceivedInterest().add(plan.getReceivedPrincipal()).compareTo(plan.getTotalAmount()) >=
+                            0) {
+                        plan.setVerificationStatus(2);
+                    } else {
+                        plan.setVerificationStatus(1);
+                    }
+                }
+            }
+            // 更新收款单状态
+            BigDecimal finalUsed = receipt.getReceiptAmount().subtract(availableAmount);
+            receipt.setUsedAmount(finalUsed);
+            receipt.setUseStatus(finalUsed.compareTo(receipt.getReceiptAmount()) >= 0 ? 2 :
+                    (finalUsed.compareTo(BigDecimal.ZERO) > 0 ? 1 : 0));
+        }
+        return new WriteOffStat(count, lesseePrincipal, lesseeInterest);
+    }
 }

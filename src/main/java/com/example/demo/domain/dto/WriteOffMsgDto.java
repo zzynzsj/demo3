@@ -18,4 +18,12 @@ public class WriteOffMsgDto {
 
     // 任务ID
     private String taskId;
+    //
+    // private List<String> lesseeNameList;
+    //
+    // public WriteOffMsgDto(List<String> lesseeNameList, LocalDate dueDateEnd, String taskId) {
+    //     this.lesseeNameList = lesseeNameList;
+    //     this.dueDateEnd = dueDateEnd;
+    //     this.taskId = taskId;
+    // }
 }

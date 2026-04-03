@@ -30,6 +30,6 @@ spring:
       simple:
         # 强制开启手动确认模式，阻止Spring重复ACK
         acknowledge-mode: manual
-        concurrency: 50
-        max-concurrency: 50
-        prefetch: 100
+        concurrency: 100
+        max-concurrency: 150
+        prefetch: 200

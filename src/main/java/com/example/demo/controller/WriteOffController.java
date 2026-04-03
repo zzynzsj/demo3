@@ -32,7 +32,7 @@ public class WriteOffController {
         if (reqDto == null) {
             reqDto = new WriteOffReqDto();
         }
-        return writeOffDetailService.executeBatchWriteOff(reqDto);
+        return writeOffDetailService.executeFastBatchWriteOff(reqDto);
     }
 
     /**
