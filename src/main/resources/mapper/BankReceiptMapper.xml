@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.demo.mapper.BankReceiptMapper">
+
+    <update id="batchUpdateUsedAmount">
+        UPDATE bank_receipt
+        SET
+        used_amount = CASE id
+        <foreach collection="list" item="item">
+            WHEN #{item.id} THEN #{item.usedAmount}
+        </foreach>
+        END,
+        use_status = CASE id
+        <foreach collection="list" item="item">
+            WHEN #{item.id} THEN #{item.useStatus}
+        </foreach>
+        END
+        WHERE id IN
+        <foreach collection="list" item="item" open="(" separator="," close=")">
+            #{item.id}
+        </foreach>
+    </update>
+
+</mapper>

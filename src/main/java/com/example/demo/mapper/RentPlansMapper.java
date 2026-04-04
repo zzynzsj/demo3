@@ -2,17 +2,13 @@ package com.example.demo.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.example.demo.domain.entity.RentPlans;
+import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
 
-/**
- * @author zzy
- * @description 针对表【rent_plans(租金计划表（应收）)】的数据库操作Mapper
- * @createDate 2026-03-31 17:54:50
- * @Entity com.example.demo.domain.entity.RentPlans
- */
+import java.util.List;
+
+@Mapper
 public interface RentPlansMapper extends BaseMapper<RentPlans> {
 
+    void batchUpdateReceivedAmount(@Param("list") List<RentPlans> list);
 }
-
-
-
-

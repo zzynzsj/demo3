@@ -14,7 +14,7 @@ public class ThreadPoolConfig {
     public Executor writeOffExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
         // 核心线程数
-        executor.setCorePoolSize(Runtime.getRuntime().availableProcessors() * 2);
+        executor.setCorePoolSize(32);
         executor.setMaxPoolSize(64);
         executor.setQueueCapacity(5000);
         executor.setThreadNamePrefix("WriteOff-Task-");

@@ -3,15 +3,16 @@ package com.example.demo.service;
 import cn.hutool.core.collection.CollUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
-import com.example.demo.config.MqConfig;
-import com.example.demo.domain.dto.WriteOffMsgDto;
 import com.example.demo.domain.dto.WriteOffProgressRespDto;
 import com.example.demo.domain.dto.WriteOffReqDto;
+import com.example.demo.domain.dto.WriteOffStat;
 import com.example.demo.domain.entity.BankReceipt;
+import com.example.demo.domain.entity.RentPlans;
 import com.example.demo.domain.entity.WriteOffDetail;
 import com.example.demo.mapper.BankReceiptMapper;
 import com.example.demo.mapper.RentPlansMapper;
 import com.example.demo.mapper.WriteOffDetailMapper;
+import com.example.demo.util.AtomicBigDecimal;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,13 +22,17 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.stream.Collectors;
+
+import static com.example.demo.config.MqConfig.REDIS_STATUS_PREFIX;
 
 /**
  * @author zzy
@@ -53,93 +58,155 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
 
+    @Autowired
+    private LesseeWriteOffService lesseeWriteOffService;
+
     /**
      * 异步核销任务提交入口（基于 RabbitMQ 与 Redis）
      *
      * @return 返回全局唯一任务ID
      */
     public String submitAsyncWriteOffTask(WriteOffReqDto reqDto) {
-        // 基于当前系统时间戳生成全局唯一任务id，并构建与之对应的 Redis 状态记录键名
         String taskId = "TASK_" + System.currentTimeMillis();
-        String redisKey = MqConfig.REDIS_STATUS_PREFIX + taskId;
+        String redisKey = REDIS_STATUS_PREFIX + taskId;
 
-        List<String> targetLessees = new ArrayList<>();
+        // ============ 第一步：两条SQL加载全量数据 ============
+        log.info("【任务{}】开始加载全量数据...", taskId);
+        long loadStart = System.currentTimeMillis();
 
-        // if (CharSequenceUtil.isNotBlank(reqDto.getLesseeName())) {
-        //     // 指定承租人核销场景。
-        //     targetLessees.add(reqDto.getLesseeName());
-        // } else {
-        // 全局一键核销场景：通过groupBy去重查询当前收款单表中存在未使用/部分使用余额的所有承租人名称
-        LambdaQueryWrapper<BankReceipt> wrapper = new LambdaQueryWrapper<>();
-        wrapper.select(BankReceipt::getPayerAccountName);
-        wrapper.lt(BankReceipt::getUseStatus, 2);
-        wrapper.groupBy(BankReceipt::getPayerAccountName);
-        // 查询所有待核销的收款单
-        // List<BankReceipt> pendingList = bankReceiptMapper.selectList(wrapper);
-        // // 如果不为空，则将所有待核销的收款单的所属租户名称添加到目标列表中
-        // if (CollUtil.isNotEmpty(pendingList)) {
-        //     targetLessees = pendingList.stream()
-        //             .map(BankReceipt::getPayerAccountName)
-        //             .collect(Collectors.toList());
-        // }
-        // 一查就崩
-        List<Object> pendingObjs = bankReceiptMapper.selectObjs(wrapper);
-        if (CollUtil.isNotEmpty(pendingObjs)) {
-            targetLessees = pendingObjs.stream()
-                    .map(Object::toString)
-                    .collect(Collectors.toList());
-        }
+        LambdaQueryWrapper<BankReceipt> receiptWrapper = new LambdaQueryWrapper<>();
+        receiptWrapper.lt(BankReceipt::getUseStatus, 2);
+        List<BankReceipt> allReceipts = bankReceiptMapper.selectList(receiptWrapper);
 
-        if (CollUtil.isEmpty(targetLessees)) {
-            // 边缘情况处理：如无可处理客户，直接初始化Redis最终成功状态，避免后续空转
+        if (CollUtil.isEmpty(allReceipts)) {
             stringRedisTemplate.opsForHash().put(redisKey, "state", "SUCCESS");
             return taskId;
         }
 
-        // 初始化RedisHash数据结构，存储该任务的元数据，供前端轮询查询
-        stringRedisTemplate.opsForHash().put(redisKey, "state", "RUNNING");
-        stringRedisTemplate.opsForHash().put(redisKey, "totalTaskCount", String.valueOf(targetLessees.size()));
-        stringRedisTemplate.opsForHash().put(redisKey, "finishedTaskCount", "0");
-        // 设置key的过期时间为24小时
-        stringRedisTemplate.expire(redisKey, 24, TimeUnit.HOURS);
-        stringRedisTemplate.opsForHash().put(redisKey, "startTime", String.valueOf(System.currentTimeMillis()));
+        LambdaQueryWrapper<RentPlans> planWrapper = new LambdaQueryWrapper<>();
+        planWrapper.lt(RentPlans::getVerificationStatus, 2);
+        List<RentPlans> allPlans = rentPlansMapper.selectList(planWrapper);
 
-        // 将目标承租人名单拆分，通过rabbitTemplate将每一个承租人的核销参数封装为消息投递至Exchange
-        // 异步发送MQ消息
-        // 创建一个 final 的局部变量，把名单传给它
-        final List<String> finalTargetLessees = targetLessees;
-        // CompletableFuture.runAsync(() -> {
-        //     for (int i = 0; i < finalTargetLessees.size(); i++) {
-        //         String lessee = finalTargetLessees.get(i);
-        //         WriteOffMsgDto msg = new WriteOffMsgDto(lessee, reqDto.getDueDateEnd(), taskId);
-        //         rabbitTemplate.convertAndSend(MqConfig.EXCHANGE_NAME, MqConfig.ROUTING_KEY, msg);
-        //         // 限流,服务器太拉了
-        //         // if (i > 0 && i % 3000 == 0) {
-        //         //     try {
-        //         //         TimeUnit.MILLISECONDS.sleep(30);
-        //         //     } catch (InterruptedException e) {
-        //         //         Thread.currentThread().interrupt();
-        //         //     }
-        //         // }
-        //     }
-        //     log.info("========= 异步任务 MQ 投递彻底完成，taskId: {}，共投递 {} 个子任务 =========", taskId,
-        //             finalTargetLessees.size());
-        // }, writeOffExecutor);
-        // List<CompletableFuture<Void>> sendFutures = targetLessees.stream()
-        //         .map(lessee -> CompletableFuture.runAsync(() -> {
-        //             WriteOffMsgDto msg = new WriteOffMsgDto(lessee, reqDto.getDueDateEnd(), taskId);
-        //             rabbitTemplate.convertAndSend(MqConfig.EXCHANGE_NAME, MqConfig.ROUTING_KEY, msg);
-        //         }, writeOffExecutor))
-        //         .collect(Collectors.toList());
+        if (CollUtil.isEmpty(allPlans)) {
+            stringRedisTemplate.opsForHash().put(redisKey, "state", "SUCCESS");
+            return taskId;
+        }
+
+        // 按承租人分组 + 提前排好序
+        Map<String, List<BankReceipt>> receiptMap = allReceipts.stream()
+                .collect(Collectors.groupingBy(BankReceipt::getPayerAccountName));
+        Map<String, List<RentPlans>> planMap = allPlans.stream()
+                .collect(Collectors.groupingBy(RentPlans::getLesseeName));
+
+        receiptMap.values().forEach(list ->
+                list.sort(Comparator.comparing(BankReceipt::getReceiptDate)));
+        planMap.values().forEach(list ->
+                list.sort(Comparator.comparing(RentPlans::getDueDate)));
+
+        // 取交集
+        Set<String> lesseeNames = new HashSet<>(receiptMap.keySet());
+        lesseeNames.retainAll(planMap.keySet());
+
+        if (lesseeNames.isEmpty()) {
+            stringRedisTemplate.opsForHash().put(redisKey, "state", "SUCCESS");
+            return taskId;
+        }
+
+        log.info("【任务{}】数据加载完毕，耗时{}ms，待处理承租人{}个",
+                taskId, System.currentTimeMillis() - loadStart, lesseeNames.size());
+
+        // ============ 第二步：初始化Redis ============
+        int totalLesseeCount = lesseeNames.size();
+        stringRedisTemplate.opsForHash().put(redisKey, "state", "RUNNING");
+        stringRedisTemplate.opsForHash().put(redisKey, "totalTaskCount", String.valueOf(totalLesseeCount));
+        stringRedisTemplate.opsForHash().put(redisKey, "finishedTaskCount", "0");
+        stringRedisTemplate.opsForHash().put(redisKey, "startTime", String.valueOf(System.currentTimeMillis()));
+        stringRedisTemplate.expire(redisKey, 24, TimeUnit.HOURS);
+
+        // ============ 第三步：异步执行（计算和写入分离） ============
         CompletableFuture.runAsync(() -> {
-            // 异步线程，内部使用并行流
-            finalTargetLessees.parallelStream().forEach(lessee -> {
-                WriteOffMsgDto msg = new WriteOffMsgDto(lessee, taskId);
-                rabbitTemplate.convertAndSend(MqConfig.EXCHANGE_NAME, MqConfig.ROUTING_KEY, msg); // 并行发送
-            });
+            try {
+                final int BATCH_SIZE = 300;
+                List<List<String>> batches = partition(new ArrayList<>(lesseeNames), BATCH_SIZE);
+                LongAdder totalCount = new LongAdder();
+                AtomicBigDecimal totalPrincipal = new AtomicBigDecimal();
+                AtomicBigDecimal totalInterest = new AtomicBigDecimal();
+                AtomicBoolean hasError = new AtomicBoolean(false);
+                AtomicLong finishedCount = new AtomicLong(0);
+                final Semaphore writeSemaphore = new Semaphore(4);
+                log.info("【任务{}】开始执行，共{}个批次，{}个线程并行", taskId, batches.size(), 32);
+                List<CompletableFuture<Void>> futures = batches.stream()
+                        .map(batch -> CompletableFuture.runAsync(() -> {
+                            try {
+                                long batchStart = System.currentTimeMillis();
+                                // --- 第1步：纯内存计算（无DB） ---
+                                List<BankReceipt> batchReceipts = new ArrayList<>();
+                                List<RentPlans> batchPlans = new ArrayList<>();
+                                for (String lessee : batch) {
+                                    List<BankReceipt> receipts = receiptMap.get(lessee);
+                                    List<RentPlans> plans = planMap.get(lessee);
+                                    if (receipts == null || plans == null) {
+                                        continue;
+                                    }
+                                    WriteOffStat stat = lesseeWriteOffService
+                                            .computeWriteOff(lessee, receipts, plans);
+                                    totalCount.add(stat.getCount());
+                                    totalPrincipal.add(stat.getPrincipal());
+                                    totalInterest.add(stat.getInterest());
+                                    batchReceipts.addAll(receipts);
+                                    batchPlans.addAll(plans);
+                                }
+                                long calcCost = System.currentTimeMillis() - batchStart;
+                                // --- 第2步：只写本批次的行，与其他线程零重叠，无锁竞争 ---
+                                List<BankReceipt> changedReceipts = batchReceipts.stream()
+                                        .filter(r -> r.getUseStatus() != null && r.getUseStatus() > 0)
+                                        .collect(Collectors.toList());
+                                List<RentPlans> changedPlans = batchPlans.stream()
+                                        .filter(p -> p.getVerificationStatus() != null && p.getVerificationStatus() > 0)
+                                        .collect(Collectors.toList());
+                                if (!changedReceipts.isEmpty() || !changedPlans.isEmpty()) {
+                                    long writeStart = System.currentTimeMillis();
+                                    lesseeWriteOffService.batchUpdateDb(changedReceipts, changedPlans);
+                                    log.info("写库耗时: {}ms, receipts:{}, plans:{}",
+                                            System.currentTimeMillis() - writeStart,
+                                            changedReceipts.size(), changedPlans.size());
+                                }
+                                long totalCost = System.currentTimeMillis() - batchStart;
+                                long finished = finishedCount.addAndGet(batch.size());
+                                log.info("【任务{}】批次完成 进度{}/{} 计算{}ms 总耗时{}ms",
+                                        taskId, finished, totalLesseeCount, calcCost, totalCost);
+                            } catch (Exception e) {
+                                hasError.set(true);
+                                log.error("【任务{}】批次异常", taskId, e);
+                                finishedCount.addAndGet(batch.size());
+                            }
+                        }, writeOffExecutor))
+                        .collect(Collectors.toList());
+                // 等待所有批次完成
+                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+                // 写入最终状态
+                stringRedisTemplate.opsForHash().put(redisKey, "totalCount",
+                        String.valueOf(totalCount.sum()));
+                stringRedisTemplate.opsForHash().put(redisKey, "totalPrincipal",
+                        totalPrincipal.get().toPlainString());
+                stringRedisTemplate.opsForHash().put(redisKey, "totalInterest",
+                        totalInterest.get().toPlainString());
+                stringRedisTemplate.opsForHash().put(redisKey, "finishedTaskCount",
+                        String.valueOf(totalLesseeCount));
+                stringRedisTemplate.opsForHash().put(redisKey, "endTime",
+                        String.valueOf(System.currentTimeMillis()));
+                stringRedisTemplate.opsForHash().put(redisKey, "state",
+                        hasError.get() ? "FAILED" : "SUCCESS");
+                log.info("========== 任务{} 全部完成！核销{}笔 ==========",
+                        taskId, totalCount.sum());
+            } catch (Exception e) {
+                log.error("【任务{}】顶层异常", taskId, e);
+                stringRedisTemplate.opsForHash().put(redisKey, "state", "FAILED");
+                stringRedisTemplate.opsForHash().put(redisKey, "endTime",
+                        String.valueOf(System.currentTimeMillis()));
+            }
         }, writeOffExecutor);
-        // 主线程不等待消息发完，直接秒回给前端！
-        log.info("已触发后台投递线程，立刻向前端返回 taskId: {}", taskId);
+        log.info("已触发后台任务，立刻向前端返回 taskId: {}", taskId);
         return taskId;
     }
 
@@ -147,7 +214,7 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
      * 查询任务进度与耗时
      */
     public WriteOffProgressRespDto getTaskProgress(String taskId) {
-        String redisKey = MqConfig.REDIS_STATUS_PREFIX + taskId;
+        String redisKey = REDIS_STATUS_PREFIX + taskId;
         Map<Object, Object> rawStats = stringRedisTemplate.opsForHash().entries(redisKey);
         if (rawStats.isEmpty()) {
             return null;
@@ -210,6 +277,17 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
         } catch (Exception e) {
             return defaultValue;
         }
+    }
+
+    /**
+     * 将列表分割成指定大小的子列表
+     */
+    private <T> List<List<T>> partition(List<T> list, int size) {
+        List<List<T>> partitions = new ArrayList<>();
+        for (int i = 0; i < list.size(); i += size) {
+            partitions.add(list.subList(i, Math.min(i + size, list.size())));
+        }
+        return partitions;
     }
 
 }

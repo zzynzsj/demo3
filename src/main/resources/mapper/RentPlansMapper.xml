@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.demo.mapper.RentPlansMapper">
+
+    <update id="batchUpdateReceivedAmount">
+        UPDATE rent_plans
+        SET
+        received_interest = CASE id
+        <foreach collection="list" item="item">
+            WHEN #{item.id} THEN #{item.receivedInterest}
+        </foreach>
+        END,
+        received_principal = CASE id
+        <foreach collection="list" item="item">
+            WHEN #{item.id} THEN #{item.receivedPrincipal}
+        </foreach>
+        END,
+        verification_status = CASE id
+        <foreach collection="list" item="item">
+            WHEN #{item.id} THEN #{item.verificationStatus}
+        </foreach>
+        END
+        WHERE id IN
+        <foreach collection="list" item="item" open="(" separator="," close=")">
+            #{item.id}
+        </foreach>
+    </update>
+
+</mapper>
