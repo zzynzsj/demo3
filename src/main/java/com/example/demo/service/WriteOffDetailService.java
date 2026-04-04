@@ -69,88 +69,87 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
      * 基于线程池的同步批量核销方法（老版本）
      */
     public WriteOffRespDto executeBatchWriteOff(WriteOffReqDto req) {
-        // long startTime = System.currentTimeMillis();
-        // log.info(">>> 开始准备核销数据...");
-        // LambdaQueryWrapper<BankReceipt> receiptWrapper = new LambdaQueryWrapper<>();
-        // //  use_status < 2，仅过滤出状态为0-未使用,1-部分使用的记录。
-        // receiptWrapper.lt(BankReceipt::getUseStatus, 2);
-        //
-        // LambdaQueryWrapper<RentPlans> planWrapper = new LambdaQueryWrapper<>();
-        // //  verification_status < 2，仅过滤出状态为0-未核销,1-部分核销的记录。
-        // planWrapper.lt(RentPlans::getVerificationStatus, 2);
-        //
-        // // 承租人名称
-        // if (ObjectUtil.isNotEmpty(req.getLesseeName())) {
-        //     receiptWrapper.eq(BankReceipt::getPayerAccountName, req.getLesseeName());
-        //     planWrapper.eq(RentPlans::getLesseeName, req.getLesseeName());
-        // }
-        //
-        // if (ObjectUtil.isNotNull(req.getDueDateEnd())) {
-        //     // 限制应收日期早于或等于前端传入的截止日期。
-        //     planWrapper.le(RentPlans::getDueDate, req.getDueDateEnd());
-        // }
-        //
-        // List<BankReceipt> allReceipts = bankReceiptMapper.selectList(receiptWrapper);
-        // List<RentPlans> allPlans = rentPlansMapper.selectList(planWrapper);
-        //
-        // if (CollUtil.isEmpty(allReceipts) || CollUtil.isEmpty(allPlans)) {
-        //     log.info("未发现满足条件的待核销匹配项，任务结束。");
-        //     return WriteOffRespDto.builder()
-        //             .totalTimeSeconds(0.0)
-        //             .totalCount(0L)
-        //             .totalPrincipal(BigDecimal.ZERO)
-        //             .totalInterest(BigDecimal.ZERO)
-        //             .build();
-        // }
-        // // 将扁平的数据列表按承租人名称转换为 Map 分组结构，实现基于承租人维度的数据隔离，为后续的多线程并发处理提供基础。
-        // Map<String, List<BankReceipt>> receiptGroup = allReceipts.stream()
-        //         .collect(Collectors.groupingBy(BankReceipt::getPayerAccountName));
-        // Map<String, List<RentPlans>> planGroup = allPlans.stream()
-        //         .collect(Collectors.groupingBy(RentPlans::getLesseeName));
-        //
-        // // LongAdder累加器，用于统计核销总笔数。
-        // LongAdder totalCount = new LongAdder();
-        //
-        // // Collections.synchronizedList() 将非线程安全的 ArrayList 包装为线程安全的集合。
-        // // 因为后续的 CompletableFuture 会在多线程环境中同时向这两个集合中添加元素。
-        // final List<BigDecimal> principalSum = Collections.synchronizedList(new ArrayList<>());
-        // final List<BigDecimal> interestSum = Collections.synchronizedList(new ArrayList<>());
-        //
-        // // 将每个承租人的核销逻辑封装为一个异步任务。
-        // // 遍历 receiptGroup (按承租人分组后的 Map)，将其映射为多个独立的并发任务。
-        // List<CompletableFuture<Void>> futures = receiptGroup.entrySet().stream().map(entry -> {
-        //     String lesseeName = entry.getKey();
-        //     List<BankReceipt> receipts = entry.getValue();
-        //     List<RentPlans> plans = planGroup.get(lesseeName);
-        //
-        //     // CompletableFuture.runAsync() 将任务提交给自定义的 writeOffExecutor 线程池执行。
-        //     return CompletableFuture.runAsync(() -> {
-        //         if (CollUtil.isNotEmpty(plans)) {
-        //             WriteOffStat stat = lesseeWriteOffService.processLesseeWriteOff(lesseeName, receipts, plans);
-        //             totalCount.add(stat.getCount());
-        //             principalSum.add(stat.getPrincipal());
-        //             interestSum.add(stat.getInterest());
-        //         }
-        //     }, writeOffExecutor);
-        // }).collect(Collectors.toList());
-        //
-        // // CompletableFuture.allOf().join() 会阻塞当前主线程，等待上述列表中的所有子线程任务执行完毕，以确保数据完整收集。
-        // CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-        //
-        // // reduce将集合中的所有BigDecimal累加求和。
-        // BigDecimal totalP = principalSum.stream().reduce(BigDecimal.ZERO, BigDecimal::add);
-        // BigDecimal totalI = interestSum.stream().reduce(BigDecimal.ZERO, BigDecimal::add);
-        // double duration = (System.currentTimeMillis() - startTime) / 1000.0;
-        //
-        // log.info(">>> 核销完成！耗时:{}s, 笔数:{}, 本金:{}, 利息:{}", duration, totalCount.sum(), totalP, totalI);
-        //
-        // return WriteOffRespDto.builder()
-        //         .totalTimeSeconds(duration)
-        //         .totalCount(totalCount.sum())
-        //         .totalPrincipal(totalP)
-        //         .totalInterest(totalI)
-        //         .build();
-        return null;
+        long startTime = System.currentTimeMillis();
+        log.info(">>> 开始准备核销数据...");
+        LambdaQueryWrapper<BankReceipt> receiptWrapper = new LambdaQueryWrapper<>();
+        //  use_status < 2，仅过滤出状态为0-未使用,1-部分使用的记录。
+        receiptWrapper.lt(BankReceipt::getUseStatus, 2);
+
+        LambdaQueryWrapper<RentPlans> planWrapper = new LambdaQueryWrapper<>();
+        //  verification_status < 2，仅过滤出状态为0-未核销,1-部分核销的记录。
+        planWrapper.lt(RentPlans::getVerificationStatus, 2);
+
+        // 承租人名称
+        if (ObjectUtil.isNotEmpty(req.getLesseeName())) {
+            receiptWrapper.eq(BankReceipt::getPayerAccountName, req.getLesseeName());
+            planWrapper.eq(RentPlans::getLesseeName, req.getLesseeName());
+        }
+
+        if (ObjectUtil.isNotNull(req.getDueDateEnd())) {
+            // 限制应收日期早于或等于前端传入的截止日期。
+            planWrapper.le(RentPlans::getDueDate, req.getDueDateEnd());
+        }
+
+        List<BankReceipt> allReceipts = bankReceiptMapper.selectList(receiptWrapper);
+        List<RentPlans> allPlans = rentPlansMapper.selectList(planWrapper);
+
+        if (CollUtil.isEmpty(allReceipts) || CollUtil.isEmpty(allPlans)) {
+            log.info("未发现满足条件的待核销匹配项，任务结束。");
+            return WriteOffRespDto.builder()
+                    .totalTimeSeconds(0.0)
+                    .totalCount(0L)
+                    .totalPrincipal(BigDecimal.ZERO)
+                    .totalInterest(BigDecimal.ZERO)
+                    .build();
+        }
+        // 将扁平的数据列表按承租人名称转换为 Map 分组结构，实现基于承租人维度的数据隔离，为后续的多线程并发处理提供基础。
+        Map<String, List<BankReceipt>> receiptGroup = allReceipts.stream()
+                .collect(Collectors.groupingBy(BankReceipt::getPayerAccountName));
+        Map<String, List<RentPlans>> planGroup = allPlans.stream()
+                .collect(Collectors.groupingBy(RentPlans::getLesseeName));
+
+        // LongAdder累加器，用于统计核销总笔数。
+        LongAdder totalCount = new LongAdder();
+
+        // Collections.synchronizedList() 将非线程安全的 ArrayList 包装为线程安全的集合。
+        // 因为后续的 CompletableFuture 会在多线程环境中同时向这两个集合中添加元素。
+        final List<BigDecimal> principalSum = Collections.synchronizedList(new ArrayList<>());
+        final List<BigDecimal> interestSum = Collections.synchronizedList(new ArrayList<>());
+
+        // 将每个承租人的核销逻辑封装为一个异步任务。
+        // 遍历 receiptGroup (按承租人分组后的 Map)，将其映射为多个独立的并发任务。
+        List<CompletableFuture<Void>> futures = receiptGroup.entrySet().stream().map(entry -> {
+            String lesseeName = entry.getKey();
+            List<BankReceipt> receipts = entry.getValue();
+            List<RentPlans> plans = planGroup.get(lesseeName);
+
+            // CompletableFuture.runAsync() 将任务提交给自定义的 writeOffExecutor 线程池执行。
+            return CompletableFuture.runAsync(() -> {
+                if (CollUtil.isNotEmpty(plans)) {
+                    WriteOffStat stat = lesseeWriteOffService.processLesseeWriteOff(lesseeName, receipts, plans);
+                    totalCount.add(stat.getCount());
+                    principalSum.add(stat.getPrincipal());
+                    interestSum.add(stat.getInterest());
+                }
+            }, writeOffExecutor);
+        }).collect(Collectors.toList());
+
+        // CompletableFuture.allOf().join() 会阻塞当前主线程，等待上述列表中的所有子线程任务执行完毕，以确保数据完整收集。
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+        // reduce将集合中的所有BigDecimal累加求和。
+        BigDecimal totalP = principalSum.stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal totalI = interestSum.stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+        double duration = (System.currentTimeMillis() - startTime) / 1000.0;
+
+        log.info(">>> 核销完成！耗时:{}s, 笔数:{}, 本金:{}, 利息:{}", duration, totalCount.sum(), totalP, totalI);
+
+        return WriteOffRespDto.builder()
+                .totalTimeSeconds(duration)
+                .totalCount(totalCount.sum())
+                .totalPrincipal(totalP)
+                .totalInterest(totalI)
+                .build();
     }
 
     /**
