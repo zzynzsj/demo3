@@ -4,7 +4,6 @@ import com.example.demo.annotation.RedisLock;
 import com.example.demo.common.Result;
 import com.example.demo.domain.dto.WriteOffProgressRespDto;
 import com.example.demo.domain.dto.WriteOffReqDto;
-import com.example.demo.domain.dto.WriteOffRespDto;
 import com.example.demo.service.WriteOffDetailService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -19,21 +18,6 @@ import org.springframework.web.bind.annotation.*;
 public class WriteOffController {
     @Autowired
     private WriteOffDetailService writeOffDetailService;
-
-    /**
-     * 触发批量核销任务
-     *
-     * @param reqDto 请求参数
-     * @return 批量核销结果
-     */
-    @PostMapping("/execute")
-    @Operation(summary = "触发批量核销", description = "基于承租人维度，利用多线程执行【先息后本】的核销逻辑")
-    public WriteOffRespDto executeBatchWriteOff(@RequestBody(required = false) WriteOffReqDto reqDto) {
-        if (reqDto == null) {
-            reqDto = new WriteOffReqDto();
-        }
-        return writeOffDetailService.executeFastBatchWriteOff(reqDto);
-    }
 
     /**
      * 异步核销

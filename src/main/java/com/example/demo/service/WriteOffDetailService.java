@@ -1,14 +1,13 @@
 package com.example.demo.service;
 
 import cn.hutool.core.collection.CollUtil;
-import cn.hutool.core.text.CharSequenceUtil;
-import cn.hutool.core.util.ObjectUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.example.demo.config.MqConfig;
-import com.example.demo.domain.dto.*;
+import com.example.demo.domain.dto.WriteOffMsgDto;
+import com.example.demo.domain.dto.WriteOffProgressRespDto;
+import com.example.demo.domain.dto.WriteOffReqDto;
 import com.example.demo.domain.entity.BankReceipt;
-import com.example.demo.domain.entity.RentPlans;
 import com.example.demo.domain.entity.WriteOffDetail;
 import com.example.demo.mapper.BankReceiptMapper;
 import com.example.demo.mapper.RentPlansMapper;
@@ -23,13 +22,11 @@ import org.springframework.stereotype.Service;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.LongAdder;
 import java.util.stream.Collectors;
 
 /**
@@ -56,102 +53,6 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
     @Autowired
     private StringRedisTemplate stringRedisTemplate;
 
-    @Autowired
-    private LesseeWriteOffService lesseeWriteOffService;
-
-    @Autowired
-    private BankReceiptService bankReceiptService;
-
-    @Autowired
-    private RentPlansService rentPlansService;
-
-    /**
-     * 基于线程池的同步批量核销方法（老版本）
-     */
-    public WriteOffRespDto executeBatchWriteOff(WriteOffReqDto req) {
-        long startTime = System.currentTimeMillis();
-        log.info(">>> 开始准备核销数据...");
-        LambdaQueryWrapper<BankReceipt> receiptWrapper = new LambdaQueryWrapper<>();
-        //  use_status < 2，仅过滤出状态为0-未使用,1-部分使用的记录。
-        receiptWrapper.lt(BankReceipt::getUseStatus, 2);
-
-        LambdaQueryWrapper<RentPlans> planWrapper = new LambdaQueryWrapper<>();
-        //  verification_status < 2，仅过滤出状态为0-未核销,1-部分核销的记录。
-        planWrapper.lt(RentPlans::getVerificationStatus, 2);
-
-        // 承租人名称
-        if (ObjectUtil.isNotEmpty(req.getLesseeName())) {
-            receiptWrapper.eq(BankReceipt::getPayerAccountName, req.getLesseeName());
-            planWrapper.eq(RentPlans::getLesseeName, req.getLesseeName());
-        }
-
-        if (ObjectUtil.isNotNull(req.getDueDateEnd())) {
-            // 限制应收日期早于或等于前端传入的截止日期。
-            planWrapper.le(RentPlans::getDueDate, req.getDueDateEnd());
-        }
-
-        List<BankReceipt> allReceipts = bankReceiptMapper.selectList(receiptWrapper);
-        List<RentPlans> allPlans = rentPlansMapper.selectList(planWrapper);
-
-        if (CollUtil.isEmpty(allReceipts) || CollUtil.isEmpty(allPlans)) {
-            log.info("未发现满足条件的待核销匹配项，任务结束。");
-            return WriteOffRespDto.builder()
-                    .totalTimeSeconds(0.0)
-                    .totalCount(0L)
-                    .totalPrincipal(BigDecimal.ZERO)
-                    .totalInterest(BigDecimal.ZERO)
-                    .build();
-        }
-        // 将扁平的数据列表按承租人名称转换为 Map 分组结构，实现基于承租人维度的数据隔离，为后续的多线程并发处理提供基础。
-        Map<String, List<BankReceipt>> receiptGroup = allReceipts.stream()
-                .collect(Collectors.groupingBy(BankReceipt::getPayerAccountName));
-        Map<String, List<RentPlans>> planGroup = allPlans.stream()
-                .collect(Collectors.groupingBy(RentPlans::getLesseeName));
-
-        // LongAdder累加器，用于统计核销总笔数。
-        LongAdder totalCount = new LongAdder();
-
-        // Collections.synchronizedList() 将非线程安全的 ArrayList 包装为线程安全的集合。
-        // 因为后续的 CompletableFuture 会在多线程环境中同时向这两个集合中添加元素。
-        final List<BigDecimal> principalSum = Collections.synchronizedList(new ArrayList<>());
-        final List<BigDecimal> interestSum = Collections.synchronizedList(new ArrayList<>());
-
-        // 将每个承租人的核销逻辑封装为一个异步任务。
-        // 遍历 receiptGroup (按承租人分组后的 Map)，将其映射为多个独立的并发任务。
-        List<CompletableFuture<Void>> futures = receiptGroup.entrySet().stream().map(entry -> {
-            String lesseeName = entry.getKey();
-            List<BankReceipt> receipts = entry.getValue();
-            List<RentPlans> plans = planGroup.get(lesseeName);
-
-            // CompletableFuture.runAsync() 将任务提交给自定义的 writeOffExecutor 线程池执行。
-            return CompletableFuture.runAsync(() -> {
-                if (CollUtil.isNotEmpty(plans)) {
-                    WriteOffStat stat = lesseeWriteOffService.processLesseeWriteOff(lesseeName, receipts, plans);
-                    totalCount.add(stat.getCount());
-                    principalSum.add(stat.getPrincipal());
-                    interestSum.add(stat.getInterest());
-                }
-            }, writeOffExecutor);
-        }).collect(Collectors.toList());
-
-        // CompletableFuture.allOf().join() 会阻塞当前主线程，等待上述列表中的所有子线程任务执行完毕，以确保数据完整收集。
-        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-
-        // reduce将集合中的所有BigDecimal累加求和。
-        BigDecimal totalP = principalSum.stream().reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal totalI = interestSum.stream().reduce(BigDecimal.ZERO, BigDecimal::add);
-        double duration = (System.currentTimeMillis() - startTime) / 1000.0;
-
-        log.info(">>> 核销完成！耗时:{}s, 笔数:{}, 本金:{}, 利息:{}", duration, totalCount.sum(), totalP, totalI);
-
-        return WriteOffRespDto.builder()
-                .totalTimeSeconds(duration)
-                .totalCount(totalCount.sum())
-                .totalPrincipal(totalP)
-                .totalInterest(totalI)
-                .build();
-    }
-
     /**
      * 异步核销任务提交入口（基于 RabbitMQ 与 Redis）
      *
@@ -164,30 +65,29 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
 
         List<String> targetLessees = new ArrayList<>();
 
-        if (CharSequenceUtil.isNotBlank(reqDto.getLesseeName())) {
-            // 指定承租人核销场景。
-            targetLessees.add(reqDto.getLesseeName());
-        } else {
-            // 全局一键核销场景：通过groupBy去重查询当前收款单表中存在未使用/部分使用余额的所有承租人名称
-            LambdaQueryWrapper<BankReceipt> wrapper = new LambdaQueryWrapper<>();
-            wrapper.select(BankReceipt::getPayerAccountName);
-            wrapper.lt(BankReceipt::getUseStatus, 2);
-            wrapper.groupBy(BankReceipt::getPayerAccountName);
-            // 查询所有待核销的收款单
-            // List<BankReceipt> pendingList = bankReceiptMapper.selectList(wrapper);
-            // // 如果不为空，则将所有待核销的收款单的所属租户名称添加到目标列表中
-            // if (CollUtil.isNotEmpty(pendingList)) {
-            //     targetLessees = pendingList.stream()
-            //             .map(BankReceipt::getPayerAccountName)
-            //             .collect(Collectors.toList());
-            // }
-            // 一查就崩
-            List<Object> pendingObjs = bankReceiptMapper.selectObjs(wrapper);
-            if (CollUtil.isNotEmpty(pendingObjs)) {
-                targetLessees = pendingObjs.stream()
-                        .map(Object::toString)
-                        .collect(Collectors.toList());
-            }
+        // if (CharSequenceUtil.isNotBlank(reqDto.getLesseeName())) {
+        //     // 指定承租人核销场景。
+        //     targetLessees.add(reqDto.getLesseeName());
+        // } else {
+        // 全局一键核销场景：通过groupBy去重查询当前收款单表中存在未使用/部分使用余额的所有承租人名称
+        LambdaQueryWrapper<BankReceipt> wrapper = new LambdaQueryWrapper<>();
+        wrapper.select(BankReceipt::getPayerAccountName);
+        wrapper.lt(BankReceipt::getUseStatus, 2);
+        wrapper.groupBy(BankReceipt::getPayerAccountName);
+        // 查询所有待核销的收款单
+        // List<BankReceipt> pendingList = bankReceiptMapper.selectList(wrapper);
+        // // 如果不为空，则将所有待核销的收款单的所属租户名称添加到目标列表中
+        // if (CollUtil.isNotEmpty(pendingList)) {
+        //     targetLessees = pendingList.stream()
+        //             .map(BankReceipt::getPayerAccountName)
+        //             .collect(Collectors.toList());
+        // }
+        // 一查就崩
+        List<Object> pendingObjs = bankReceiptMapper.selectObjs(wrapper);
+        if (CollUtil.isNotEmpty(pendingObjs)) {
+            targetLessees = pendingObjs.stream()
+                    .map(Object::toString)
+                    .collect(Collectors.toList());
         }
 
         if (CollUtil.isEmpty(targetLessees)) {
@@ -234,7 +134,7 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
         CompletableFuture.runAsync(() -> {
             // 异步线程，内部使用并行流
             finalTargetLessees.parallelStream().forEach(lessee -> {
-                WriteOffMsgDto msg = new WriteOffMsgDto(lessee, reqDto.getDueDateEnd(), taskId);
+                WriteOffMsgDto msg = new WriteOffMsgDto(lessee, taskId);
                 rabbitTemplate.convertAndSend(MqConfig.EXCHANGE_NAME, MqConfig.ROUTING_KEY, msg); // 并行发送
             });
         }, writeOffExecutor);
@@ -312,72 +212,4 @@ public class WriteOffDetailService extends ServiceImpl<WriteOffDetailMapper, Wri
         }
     }
 
-    public WriteOffRespDto executeFastBatchWriteOff(WriteOffReqDto req) {
-        long startTime = System.currentTimeMillis();
-        log.info(">>> [高性能模式] 开始百万级数据预处理...");
-
-        // 1. 在外面一次性查好所有待核销数据
-        LambdaQueryWrapper<BankReceipt> receiptWrapper = new LambdaQueryWrapper<>();
-        receiptWrapper.lt(BankReceipt::getUseStatus, 2);
-        if (ObjectUtil.isNotEmpty(req.getLesseeName())) {
-            receiptWrapper.eq(BankReceipt::getPayerAccountName, req.getLesseeName());
-        }
-
-        LambdaQueryWrapper<RentPlans> planWrapper = new LambdaQueryWrapper<>();
-        planWrapper.lt(RentPlans::getVerificationStatus, 2);
-        if (ObjectUtil.isNotEmpty(req.getLesseeName())) {
-            planWrapper.eq(RentPlans::getLesseeName, req.getLesseeName());
-        }
-        if (ObjectUtil.isNotNull(req.getDueDateEnd())) {
-            planWrapper.le(RentPlans::getDueDate, req.getDueDateEnd());
-        }
-
-        List<BankReceipt> allReceipts = bankReceiptMapper.selectList(receiptWrapper);
-        List<RentPlans> allPlans = rentPlansMapper.selectList(planWrapper);
-
-        if (CollUtil.isEmpty(allReceipts) || CollUtil.isEmpty(allPlans)) {
-            return WriteOffRespDto.builder().totalTimeSeconds(0.0).totalCount(0L).build();
-        }
-
-        // 2. 在外面分好组，避免在循环/消费者里重复查库
-        Map<String, List<BankReceipt>> receiptGroup = allReceipts.stream()
-                .collect(Collectors.groupingBy(BankReceipt::getPayerAccountName));
-        Map<String, List<RentPlans>> planGroup = allPlans.stream()
-                .collect(Collectors.groupingBy(RentPlans::getLesseeName));
-
-        // 线程安全的全局容器，用于收集所有线程产生的明细，实现大批量写入
-        List<WriteOffDetail> allDetails = Collections.synchronizedList(new ArrayList<>(100000));
-        LongAdder totalCount = new LongAdder();
-
-        // 3. 体现多线程核销：利用 CompletableFuture 并行处理承租人逻辑
-        List<CompletableFuture<Void>> futures = receiptGroup.entrySet().stream().map(entry -> {
-            String lessee = entry.getKey();
-            List<BankReceipt> receipts = entry.getValue();
-            List<RentPlans> plans = planGroup.get(lessee);
-
-            return CompletableFuture.runAsync(() -> {
-                if (CollUtil.isNotEmpty(plans)) {
-                    // 调用修改后的纯内存计算逻辑
-                    WriteOffStat stat =
-                            lesseeWriteOffService.calculateMemoryWriteOff(lessee, receipts, plans, allDetails);
-                    totalCount.add(stat.getCount());
-                }
-            }, writeOffExecutor);
-        }).collect(Collectors.toList());
-
-        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-
-        // 4. 扩大 saveBatch 维度：不再按承租人存，而是全量大批次入库
-        log.info(">>> 计算完成，准备大批量落库。总明细笔数: {}", allDetails.size());
-        if (CollUtil.isNotEmpty(allDetails)) {
-            // 分批写入，每批 5000 笔，减少数据库 IO 次数
-            // this.saveBatch(allDetails, 5000);
-            bankReceiptService.updateBatchById(allReceipts, 5000);
-            rentPlansService.updateBatchById(allPlans, 5000);
-        }
-
-        double duration = (System.currentTimeMillis() - startTime) / 1000.0;
-        log.info(">>> 百万级核销完成！耗时: {}s", duration);
-        return WriteOffRespDto.builder().totalTimeSeconds(duration).totalCount(totalCount.sum()).build();
-    }
 }

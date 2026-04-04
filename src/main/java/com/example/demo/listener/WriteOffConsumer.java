@@ -59,9 +59,9 @@ public class WriteOffConsumer {
 
             LambdaQueryWrapper<RentPlans> planWrapper = new LambdaQueryWrapper<>();
             planWrapper.lt(RentPlans::getVerificationStatus, 2).eq(RentPlans::getLesseeName, lesseeName);
-            if (msgDto.getDueDateEnd() != null) {
-                planWrapper.le(RentPlans::getDueDate, msgDto.getDueDateEnd());
-            }
+            // if (msgDto.getDueDateEnd() != null) {
+            //     planWrapper.le(RentPlans::getDueDate, msgDto.getDueDateEnd());
+            // }
             List<RentPlans> plans = rentPlansMapper.selectList(planWrapper);
             // 当存在可处理的账单和流水时，调用底层事务方法执行核销落库
             if (!receipts.isEmpty() && !plans.isEmpty()) {
